@@ -1,9 +1,9 @@
 import {
-  dataKeyFor, loadData, saveData, verifyLocalStorage, hasLegacyLocalData, exportLegacyLocalData,
+  dataKeyFor, loadData, saveData, overwriteData, emptyData, verifyLocalStorage,
   exportBackup, importBackup, getDeviceId
 } from './storage.js';
 import { connectGoogle, disconnectGoogle, getGoogleProfile, restoreGoogleToken } from './google-auth.js';
-import { syncWithDrive } from './drive-sync.js';
+import { syncWithDrive, resetDriveData } from './drive-sync.js';
 import { createOperation, applyOperations, mergeOperations } from './journal.js';
 import { mergeData } from './merge.js';
 import { GOOGLE_WEB_CLIENT_ID } from './app-config.js';
@@ -18,9 +18,8 @@ import {
   normalizeText, nowISO, periodLabel, shortPeriodLabel, todayISO, uid
 } from './utils.js';
 
-const APP_VERSION = '6.2.0';
+const APP_VERSION = '6.3.0';
 const app = document.querySelector('#app');
-let installPrompt = null;
 
 const savedSession = loadAuthSession();
 const state = {
@@ -57,6 +56,8 @@ const initials = name => normalizeText(name).split(' ').filter(Boolean).slice(0,
 const getMember = id => live(state.data?.members).find(m => m.id === id);
 const getProduct = id => live(state.data?.products).find(p => p.id === id);
 const clientId = () => GOOGLE_WEB_CLIENT_ID || '';
+const compactViewport = () => window.matchMedia?.('(max-width: 720px)').matches ?? window.innerWidth <= 720;
+const CLEAR_PHRASE = 'borrar datos northsouthjjm';
 
 function toast(message, type = 'ok') {
   state.toast = { message, type };
@@ -112,6 +113,7 @@ function clearPageSearches() {
 
 function navigate(view) {
   if (!state.account) return;
+  if (view === 'fees' && compactViewport()) view = 'payments';
   state.view = view;
   state.modal = null;
   clearPageSearches();
@@ -250,8 +252,11 @@ async function syncNow(interactive = false) {
 
     // Si el usuario guardó algo mientras Drive estaba trabajando, se combina con el resultado
     // en vez de reemplazar el estado actual por una copia iniciada unos segundos antes.
-    const operations = mergeOperations(state.data.operations, result.data.operations);
-    let combined = mergeData(state.data, result.data);
+    const generationChanged = state.data.datasetId !== result.data.datasetId;
+    const operations = generationChanged
+      ? (result.data.operations || []).filter(op => op.datasetId === result.data.datasetId)
+      : mergeOperations(state.data.operations, result.data.operations);
+    let combined = generationChanged ? structuredClone(result.data) : mergeData(state.data, result.data);
     combined.operations = operations;
     combined = applyOperations(combined, operations);
     combined.operations = operations;
@@ -331,7 +336,6 @@ function shell(content) {
       <nav class="mobile-nav">
         <button data-view="dashboard" class="${state.view === 'dashboard' ? 'active' : ''}"><b>◫</b>Panel</button>
         <button data-view="members" class="${state.view === 'members' ? 'active' : ''}"><b>♟</b>Socios</button>
-        <button data-view="fees" class="${state.view === 'fees' ? 'active' : ''}"><b>▦</b>Cuotas</button>
         <button data-view="payments" class="${state.view === 'payments' ? 'active' : ''}"><b>$</b>Pagos</button>
         <button data-view="cantina" class="${state.view === 'cantina' ? 'active' : ''}"><b>☕</b>Cantina</button>
         <button data-view="settings" class="${state.view === 'settings' ? 'active' : ''}"><b>⚙</b>Ajustes</button>
@@ -457,7 +461,7 @@ function renderFees() {
     </div>
     <section class="card matrix-card">
       <div class="matrix-help">Tocá un mes pendiente para registrar el cobro. Los meses pagos por adelantado quedan marcados en verde.</div>
-      <div class="fees-scroll">
+      <div class="fees-scroll" data-scroll-key="fees-table">
         <table class="fees-table">
           <thead><tr><th class="member-col">Socio</th>${periods.map(p=>`<th class="${p===currentPeriod()?'current-month':''}">${shortPeriodLabel(p)}</th>`).join('')}</tr></thead>
           <tbody>${rows.map(m => `<tr><td class="member-col"><button class="matrix-member" data-action="member-detail" data-id="${m.id}">${escapeHTML(memberName(m))}</button></td>${periods.map(p => renderFeeCell(m,p)).join('')}</tr>`).join('')}</tbody>
@@ -494,7 +498,7 @@ function renderPayments() {
       <select id="payment-method-filter"><option value="all">Todos los medios</option>${[['cash','Efectivo'],['transfer','Transferencia'],['other','Otro'],['unknown','Sin especificar']].map(([v,l])=>`<option value="${v}" ${state.paymentMethod===v?'selected':''}>${l}</option>`).join('')}</select>
     </div>
     <section class="card panel"><div class="panel-head"><div><div class="panel-title">Pagos registrados</div><div class="panel-subtitle">${rows.length} movimientos · ordenados por agregado</div></div><div class="amount">${money(total)}</div></div>
-      <div class="list">${rows.map(p => { const m=getMember(p.memberId); return `<div class="row-card"><div class="avatar">${initials(m?memberName(m):'?')}</div><div class="row-main"><div class="row-title">${escapeHTML(m?memberName(m):'Socio no disponible')}</div><div class="row-sub">${shortPeriodLabel(p.period)} · cobro ${dateLabel(p.paidAt)} · agregado ${dateTimeLabel(p.createdAt)} · ${methodLabel(p.method)}${p.note&&p.note!=='Importado de la planilla original'?` · ${escapeHTML(p.note)}`:''}</div></div><div class="amount">${money(p.amount)}</div><div class="row-actions"><button class="btn small ghost" data-action="edit-payment" data-id="${p.id}">Editar</button><button class="btn small danger ghost-danger" data-action="delete-payment" data-id="${p.id}">Eliminar</button></div></div>`; }).join('') || '<div class="empty">No hay pagos para este filtro.</div>'}</div>
+      <div class="list">${rows.map(p => { const m=getMember(p.memberId); return `<div class="row-card"><div class="avatar">${initials(m?memberName(m):'?')}</div><div class="row-main"><div class="row-title">${escapeHTML(m?memberName(m):(p.memberNameSnapshot||'Socio no disponible'))}</div><div class="row-sub">${shortPeriodLabel(p.period)} · cobro ${dateLabel(p.paidAt)} · agregado ${dateTimeLabel(p.createdAt)} · ${methodLabel(p.method)}${p.note&&p.note!=='Importado de la planilla original'?` · ${escapeHTML(p.note)}`:''}</div></div><div class="amount">${money(p.amount)}</div><div class="row-actions"><button class="btn small ghost" data-action="edit-payment" data-id="${p.id}">Editar</button><button class="btn small danger ghost-danger" data-action="delete-payment" data-id="${p.id}">Eliminar</button></div></div>`; }).join('') || '<div class="empty">No hay pagos para este filtro.</div>'}</div>
     </section>`;
 }
 
@@ -520,18 +524,16 @@ function renderCantina() {
 function renderSettings() {
   const imported = state.data.payments.filter(p=>p.source==='xlsx-import').length;
   const driveReady = Boolean(clientId());
-  const hasCurrentData = Boolean(live(state.data.members).length || livePayments(state.data).length || live(state.data.products).length || liveSales(state.data).length);
-  const legacyAvailable = !hasCurrentData && hasLegacyLocalData();
   const deviceId = getDeviceId();
   const activity = (state.data.operations || []).slice().sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,20);
   const pending = pendingOperationCount();
   return `<div class="settings-grid">
     <section class="card settings-card"><h3>Cuota general</h3><p>Los meses anteriores conservan el valor que tenían.</p><form id="fee-form" class="form-grid compact-form"><div class="field"><label>Nueva cuota</label><input name="defaultFee" type="number" min="1" step="1" value="${Number(state.data.settings.defaultFee)}"></div><div class="field"><label>Rige desde</label><input name="effectiveFrom" type="month" value="${currentPeriod()}"></div><div class="field full"><button class="btn primary" type="submit">Guardar cuota</button></div></form></section>
     <section class="card settings-card"><h3>Sincronización con Drive</h3><p>La app guarda primero en este equipo. Drive combina los cambios cuando hay conexión.</p><div class="sync-settings"><div><span class="sync-pill ${state.sync.kind}"><span class="sync-dot"></span>${escapeHTML(state.sync.text)}</span><small>${escapeHTML(state.account.email)}</small></div><div class="settings-actions"><button class="btn primary" data-action="sync-drive" ${driveReady?'':'disabled'}>${state.token?'Sincronizar ahora':'Conectar Drive'}</button></div></div>${!driveReady?'<small class="settings-note">Google se configura en .env, no dentro de la aplicación.</small>':''}</section>
-    <section class="card settings-card"><h3>Datos y respaldo</h3><p>Una cuenta nueva empieza vacía. El archivo inicial se importa una sola vez.</p><div class="settings-actions"><button class="btn" data-action="export-backup">Descargar respaldo</button><label class="btn ghost" for="backup-file">Importar respaldo</label><input id="backup-file" type="file" accept="application/json,.json" hidden>${legacyAvailable?'<button class="btn ghost" data-action="export-legacy">Descargar datos de la versión anterior</button>':''}</div></section>
-    <section class="card settings-card"><h3>App en esta PC</h3><p>Al instalarla abre en su propia ventana y sigue usando el almacenamiento local aunque no haya internet.</p>${installPrompt?'<div class="settings-actions"><button class="btn" data-action="install-app">Instalar aplicación</button></div>':'<small class="settings-note">El botón aparece al abrir la versión publicada por HTTPS en Chrome o Edge. En localhost usá npm run dev o ABRIR-APP-LOCAL.bat.</small>'}</section>
+    <section class="card settings-card"><h3>Datos y respaldo</h3><p>Podés descargar una copia o importar un respaldo de North South.</p><div class="settings-actions"><button class="btn" data-action="export-backup">Descargar respaldo</button><label class="btn ghost" for="backup-file">Importar respaldo</label><input id="backup-file" type="file" accept="application/json,.json" hidden></div></section>
     <section class="card settings-card"><h3>Cuenta</h3><div class="account-card"><div><strong>${escapeHTML(state.account.name || state.account.email)}</strong><small>${escapeHTML(state.account.email)}</small></div><button class="btn ghost" data-action="logout">Cerrar sesión</button></div></section>
     <section class="card settings-card"><h3>Datos</h3><div class="detail-grid"><div class="detail-stat"><span>Socios</span><strong>${live(state.data.members).length}</strong></div><div class="detail-stat"><span>Activos</span><strong>${activeMembers(state.data).length}</strong></div><div class="detail-stat"><span>Pagos importados</span><strong>${imported}</strong></div><div class="detail-stat"><span>Ventas cantina</span><strong>${liveSales(state.data).length}</strong></div></div><small class="settings-note">Versión ${APP_VERSION} · almacenamiento local ${state.storageOK?'activo':'con problema'}</small></section>
+    <section class="card settings-card danger-zone"><h3>Borrar todos los datos</h3><p>Vacía socios, pagos, cantina y el registro de cambios de esta cuenta, también en Drive. Requiere una confirmación escrita.</p><button class="btn danger" data-action="open-clear-data">Borrar todos los datos</button></section>
     <section class="card settings-card settings-wide"><div class="activity-head"><div><h3>Registro de cambios</h3><p>Cada acción se guarda primero acá y después se copia a Drive como una operación independiente.</p></div><span class="badge ${pending?'warn':'ok'}">${pending?`${pending} pendiente${pending===1?'':'s'}`:'Todo sincronizado'}</span></div><div class="activity-log">${activity.map(op=>{const synced=state.syncedOperationIds.has(op.id);const own=op.deviceId===deviceId;return `<div class="activity-row"><div class="activity-mark ${synced?'synced':'pending'}"></div><div class="row-main"><div class="row-title">${escapeHTML(op.label)}</div><div class="row-sub">${dateTimeLabel(op.createdAt)} · ${own?'este equipo':'otro equipo'} · ${op.changes?.length||0} cambio${op.changes?.length===1?'':'s'}</div></div><span class="activity-status ${synced?'synced':'pending'}">${synced?'En Drive':'Local'}</span></div>`}).join('')||'<div class="empty">Todavía no hay cambios registrados en esta versión.</div>'}</div></section>
   </div>`;
 }
@@ -563,7 +565,7 @@ function renderPaymentModal(modal) {
   const entered = Number(d.amount || 0);
   const after = Math.max(0,due.total-entered);
   const advance = !editing && months === 1 ? Math.max(0, entered - due.total) : 0;
-  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal" data-modal-stop><div class="modal-head"><div><div class="modal-title">${editing?'Editar pago':'Registrar pago'}</div><div class="panel-subtitle">Elegí al socio y la app completa el resto.</div></div><button class="close-btn" data-action="close-modal">×</button></div>
+  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal" data-modal-stop data-scroll-key="modal"><div class="modal-head"><div><div class="modal-title">${editing?'Editar pago':'Registrar pago'}</div><div class="panel-subtitle">Elegí al socio y la app completa el resto.</div></div><button class="close-btn" data-action="close-modal">×</button></div>
     <form id="payment-form"><div class="modal-body">${modal.errors?.length?`<div class="form-errors">${modal.errors.map(escapeHTML).join('<br>')}</div>`:''}<div class="form-grid">
       ${renderMemberPicker(d,'payment')}
       <div class="field"><label>Mes inicial</label><input name="period" data-payment-live type="month" value="${escapeHTML(d.period)}" required></div>
@@ -572,14 +574,14 @@ function renderPaymentModal(modal) {
       <div class="field"><label>Monto</label><input id="payment-amount" name="amount" type="number" min="1" step="1" value="${escapeHTML(String(d.amount ?? due.total ?? 0))}" ${months>1?'readonly':''} required><small>${months>1?'Se calcula sumando los meses seleccionados.':'Puede ser parcial; si supera el mes, el excedente pasa a los siguientes.'}</small></div>
       <div class="field full"><label>Medio de pago</label><input type="hidden" name="method" value="${escapeHTML(d.method)}"><div class="segment">${[['cash','Efectivo'],['transfer','Transferencia'],['other','Otro']].map(([v,l])=>`<button type="button" class="${d.method===v?'active':''}" data-payment-method="${v}">${l}</button>`).join('')}</div></div>
       <div class="field full"><label>Nota <span class="muted-inline">(opcional)</span></label><input name="note" value="${escapeHTML(d.note||'')}" placeholder="Detalle del pago"></div>
-    </div>${member?`<div class="payment-preview"><div><span>${months>1?'Total de los meses':'Pendiente del mes'}</span><strong>${money(due.total)}</strong></div><div><span>${advance>0?'Adelanto a meses siguientes':'Después de este pago'}</span><strong class="${after===0?'good-text':'warn-text'}">${advance>0?money(advance):after===0?'Queda pago':`Queda ${money(after)}`}</strong></div></div>`:''}</div>
+    </div>${member?`<div class="payment-preview"><div><span>${months>1?'Total de los meses':'Pendiente del mes'}</span><strong>${money(due.total)}</strong></div><div><span data-payment-result-label>${advance>0?'Adelanto a meses siguientes':'Después de este pago'}</span><strong data-payment-result-value class="${after===0?'good-text':'warn-text'}">${advance>0?money(advance):after===0?'Queda pago':`Queda ${money(after)}`}</strong></div></div>`:''}</div>
     <div class="modal-foot">${editing?`<button type="button" class="btn danger" data-action="delete-payment" data-id="${editing.id}">${editing.batchId?'Eliminar pago completo':'Eliminar pago'}</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button type="button" class="btn primary" data-action="save-payment" ${!member||entered<=0?'disabled':''}>Guardar pago</button></div></form>
   </div></div>`;
 }
 
 function renderMemberModal(modal) {
   const d=modal.draft;
-  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal" data-modal-stop><div class="modal-head"><div><div class="modal-title">${modal.id?'Editar socio':'Nuevo socio'}</div><div class="panel-subtitle">La cuota general se completa automáticamente.</div></div><button class="close-btn" data-action="close-modal">×</button></div>
+  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal" data-modal-stop data-scroll-key="modal"><div class="modal-head"><div><div class="modal-title">${modal.id?'Editar socio':'Nuevo socio'}</div><div class="panel-subtitle">La cuota general se completa automáticamente.</div></div><button class="close-btn" data-action="close-modal">×</button></div>
     <form id="member-form"><div class="modal-body">${modal.errors?.length?`<div class="form-errors">${modal.errors.map(escapeHTML).join('<br>')}</div>`:''}<div class="form-grid">
       <div class="field"><label>Nombre</label><input name="firstName" value="${escapeHTML(d.firstName||'')}" required></div><div class="field"><label>Apellido / apodo</label><input name="lastName" value="${escapeHTML(d.lastName||'')}"></div>
       <div class="field"><label>Tipo de cuota</label><select name="feeMode" data-member-fee-mode><option value="default" ${d.feeMode!=='custom'?'selected':''}>Cuota general (${money(memberFee(state.data,{...d,feeMode:'default'},currentPeriod()))})</option><option value="custom" ${d.feeMode==='custom'?'selected':''}>Cuota especial</option></select></div>
@@ -596,7 +598,7 @@ function renderMemberDetail(modal) {
   const history=livePayments(state.data).filter(p=>p.memberId===m.id).sort((a,b)=>Date.parse(b.createdAt||b.updatedAt||0)-Date.parse(a.createdAt||a.updatedAt||0)).slice(0,8);
   const periods=Array.from({length:6},(_,i)=>addMonths(currentPeriod(),i-1));
   const badge=memberStatusLabel(m);
-  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal wide" data-modal-stop><div class="modal-head"><div class="modal-title">Ficha del socio</div><button class="close-btn" data-action="close-modal">×</button></div><div class="modal-body">
+  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal wide" data-modal-stop data-scroll-key="modal"><div class="modal-head"><div class="modal-title">Ficha del socio</div><button class="close-btn" data-action="close-modal">×</button></div><div class="modal-body">
     <div class="detail-hero"><div class="avatar">${initials(memberName(m))}</div><div class="row-main"><div class="detail-title">${escapeHTML(memberName(m))}</div><div class="row-sub"><span class="badge ${badge.cls}">${badge.text}</span>${m.phone?` · ${escapeHTML(m.phone)}`:''}</div></div><div class="detail-actions"><button class="btn" data-action="edit-member" data-id="${m.id}">Editar</button>${m.status==='active'?`<button class="btn primary" data-action="pay-member" data-id="${m.id}">Cobrar</button>`:''}</div></div>
     <div class="mini-months">${periods.map(p=>{const s=memberPeriodStatus(state.data,m,p);return `<button class="mini-month ${s.isPaid?'paid':p>currentPeriod()?'future':'due'}" ${!s.isPaid?`data-action="pay-member-period" data-id="${m.id}" data-period="${p}"`:''}><span>${shortPeriodLabel(p)}</span><strong>${s.isPaid?'✓ Pago':s.notStarted?'—':s.paid>0?`Falta ${money(s.remaining)}`:`${money(s.remaining)}`}</strong></button>`}).join('')}</div>
     <div class="detail-grid"><div class="detail-stat"><span>Cuota actual</span><strong>${money(memberFee(state.data,m,currentPeriod()))}</strong></div><div class="detail-stat"><span>Ingreso</span><strong>${m.joinedAt?dateLabel(m.joinedAt):'Sin dato'}</strong></div><div class="detail-stat"><span>Nacimiento</span><strong>${m.birthDate?dateLabel(m.birthDate):'Sin dato'}</strong></div><div class="detail-stat"><span>Mutualista</span><strong>${escapeHTML(m.medicalProvider||'Sin dato')}</strong></div></div>
@@ -607,11 +609,11 @@ function renderMemberDetail(modal) {
 function renderSaleModal(modal) {
   const d=modal.draft, member=getMember(d.memberId), product=getProduct(d.productId), editing=modal.id?state.data.sales.find(s=>s.id===modal.id):null;
   const total=Number(d.quantity||1)*Number(d.unitPrice||0);
-  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal" data-modal-stop><div class="modal-head"><div><div class="modal-title">${editing?'Editar venta':'Venta cantina'}</div><div class="panel-subtitle">Producto y cantidad; el socio es opcional.</div></div><button class="close-btn" data-action="close-modal">×</button></div><form id="sale-form"><div class="modal-body">${modal.errors?.length?`<div class="form-errors">${modal.errors.map(escapeHTML).join('<br>')}</div>`:''}<div class="form-grid">
+  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal" data-modal-stop data-scroll-key="modal"><div class="modal-head"><div><div class="modal-title">${editing?'Editar venta':'Venta cantina'}</div><div class="panel-subtitle">Producto y cantidad; el socio es opcional.</div></div><button class="close-btn" data-action="close-modal">×</button></div><form id="sale-form"><div class="modal-body">${modal.errors?.length?`<div class="form-errors">${modal.errors.map(escapeHTML).join('<br>')}</div>`:''}<div class="form-grid">
     ${renderMemberPicker(d,'sale')}
     <div class="field full"><label>Producto</label><input type="hidden" name="productId" value="${escapeHTML(d.productId||'')}"><div class="product-picker">${activeProducts(state.data).map(p=>`<button type="button" class="${d.productId===p.id?'active':''}" data-action="pick-product" data-id="${p.id}"><span>${escapeHTML(p.emoji||'🛒')}</span><b>${escapeHTML(p.name)}</b></button>`).join('')}</div></div>
     <div class="field"><label>Cantidad</label><input id="sale-quantity" name="quantity" type="number" min="1" step="1" value="${Number(d.quantity||1)}" required></div><div class="field"><label>Precio por unidad</label><input id="sale-unit-price" name="unitPrice" type="number" min="1" step="1" value="${Number(d.unitPrice||product?.price||0)}" required></div>
-    <div class="field"><label>Fecha</label><input name="soldAt" type="date" value="${escapeHTML(d.soldAt)}" required></div><div class="field"><label>Total</label><div class="readout">${money(total)}</div></div>
+    <div class="field"><label>Fecha</label><input name="soldAt" type="date" value="${escapeHTML(d.soldAt)}" required></div><div class="field"><label>Total</label><div class="readout" data-sale-total>${money(total)}</div></div>
     <div class="field full"><label>Medio de pago</label><input type="hidden" name="method" value="${escapeHTML(d.method)}"><div class="segment">${[['cash','Efectivo'],['transfer','Transferencia'],['other','Otro']].map(([v,l])=>`<button type="button" class="${d.method===v?'active':''}" data-sale-method="${v}">${l}</button>`).join('')}</div></div>
     <div class="field full"><label>Nota <span class="muted-inline">(opcional)</span></label><input name="note" value="${escapeHTML(d.note||'')}"></div>
   </div></div><div class="modal-foot">${editing?`<button type="button" class="btn danger" data-action="delete-sale" data-id="${editing.id}">Eliminar</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button class="btn cantina-btn" type="button" data-action="save-sale" ${!product||total<=0?'disabled':''}>Guardar venta</button></div></form></div></div>`;
@@ -619,7 +621,14 @@ function renderSaleModal(modal) {
 
 function renderProductModal(modal) {
   const d=modal.draft;
-  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal small-modal" data-modal-stop><div class="modal-head"><div><div class="modal-title">${modal.id?'Editar producto':'Nuevo producto'}</div><div class="panel-subtitle">El emoji aparece en los accesos de cantina.</div></div><button class="close-btn" data-action="close-modal">×</button></div><form id="product-form"><div class="modal-body">${modal.errors?.length?`<div class="form-errors">${modal.errors.map(escapeHTML).join('<br>')}</div>`:''}<div class="form-grid"><div class="field"><label>Emoji</label><input name="emoji" class="emoji-input" value="${escapeHTML(d.emoji||'🛒')}" maxlength="8"></div><div class="field"><label>Producto</label><input name="name" value="${escapeHTML(d.name||'')}" required></div><div class="field"><label>Precio habitual</label><input name="price" type="number" min="0" step="1" value="${Number(d.price||0)}"><small>Si lo dejás en 0, se ingresa al vender.</small></div><div class="field"><label>Estado</label><select name="active"><option value="active" ${d.active!==false?'selected':''}>Activo</option><option value="inactive" ${d.active===false?'selected':''}>Inactivo</option></select></div></div></div><div class="modal-foot">${modal.id?`<button type="button" class="btn danger" data-action="delete-product" data-id="${modal.id}">Eliminar</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button class="btn cantina-btn" type="button" data-action="save-product">Guardar producto</button></div></form></div></div>`;
+  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal small-modal" data-modal-stop data-scroll-key="modal"><div class="modal-head"><div><div class="modal-title">${modal.id?'Editar producto':'Nuevo producto'}</div><div class="panel-subtitle">El emoji aparece en los accesos de cantina.</div></div><button class="close-btn" data-action="close-modal">×</button></div><form id="product-form"><div class="modal-body">${modal.errors?.length?`<div class="form-errors">${modal.errors.map(escapeHTML).join('<br>')}</div>`:''}<div class="form-grid"><div class="field"><label>Emoji</label><input name="emoji" class="emoji-input" value="${escapeHTML(d.emoji||'🛒')}" maxlength="8"></div><div class="field"><label>Producto</label><input name="name" value="${escapeHTML(d.name||'')}" required></div><div class="field"><label>Precio habitual</label><input name="price" type="number" min="0" step="1" value="${Number(d.price||0)}"><small>Si lo dejás en 0, se ingresa al vender.</small></div><div class="field"><label>Estado</label><select name="active"><option value="active" ${d.active!==false?'selected':''}>Activo</option><option value="inactive" ${d.active===false?'selected':''}>Inactivo</option></select></div></div></div><div class="modal-foot">${modal.id?`<button type="button" class="btn danger" data-action="delete-product" data-id="${modal.id}">Eliminar</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button class="btn cantina-btn" type="button" data-action="save-product">Guardar producto</button></div></form></div></div>`;
+}
+
+
+function renderClearDataModal(modal) {
+  const typed = String(modal.draft?.phrase || '');
+  const ready = typed === CLEAR_PHRASE;
+  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal small-modal" data-modal-stop data-scroll-key="modal"><div class="modal-head"><div><div class="modal-title">Borrar todos los datos</div><div class="panel-subtitle">Esta acción afecta esta cuenta y su copia de Drive.</div></div><button class="close-btn" data-action="close-modal">×</button></div><div class="modal-body">${modal.errors?.length?`<div class="form-errors">${modal.errors.map(escapeHTML).join('<br>')}</div>`:''}<div class="danger-confirm"><p>Para habilitar el borrado escribí exactamente:</p><code>${CLEAR_PHRASE}</code><div class="field"><label>Confirmación</label><input id="clear-data-phrase" value="${escapeHTML(typed)}" autocomplete="off" spellcheck="false"></div></div></div><div class="modal-foot"><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button type="button" class="btn danger" data-action="confirm-clear-data" ${ready?'':'disabled'}>Borrar definitivamente</button></div></div></div>`;
 }
 
 function renderModal() {
@@ -629,15 +638,45 @@ function renderModal() {
   if(state.modal.type==='member-detail')return renderMemberDetail(state.modal);
   if(state.modal.type==='sale')return renderSaleModal(state.modal);
   if(state.modal.type==='product')return renderProductModal(state.modal);
+  if(state.modal.type==='clear-data')return renderClearDataModal(state.modal);
   return'';
 }
 
+function captureScrollState() {
+  const containers = {};
+  document.querySelectorAll('[data-scroll-key]').forEach(el => {
+    containers[el.dataset.scrollKey] = { top: el.scrollTop, left: el.scrollLeft };
+  });
+  const active = document.activeElement?.id ? {
+    id: document.activeElement.id,
+    start: document.activeElement.selectionStart,
+    end: document.activeElement.selectionEnd
+  } : null;
+  return { windowY: window.scrollY, containers, active };
+}
+
+function restoreScrollState(snapshot) {
+  window.scrollTo(0, snapshot?.windowY || 0);
+  Object.entries(snapshot?.containers || {}).forEach(([key, pos]) => {
+    const el = document.querySelector(`[data-scroll-key="${CSS.escape(key)}"]`);
+    if (el) { el.scrollTop = pos.top || 0; el.scrollLeft = pos.left || 0; }
+  });
+  if (snapshot?.active?.id) {
+    const el = document.getElementById(snapshot.active.id);
+    if (el) {
+      el.focus({ preventScroll:true });
+      try { if (snapshot.active.start != null && el.setSelectionRange) el.setSelectionRange(snapshot.active.start, snapshot.active.end ?? snapshot.active.start); } catch {}
+    }
+  }
+}
+
 function render({ preserveScroll = true } = {}) {
-  const previousScrollY = preserveScroll ? window.scrollY : 0;
+  const scrollState = preserveScroll ? captureScrollState() : { windowY:0, containers:{} };
   if (!state.account || !state.data) { app.innerHTML = renderLogin(); return; }
+  if (state.view === 'fees' && compactViewport()) state.view = 'payments';
   const content = state.view==='dashboard'?renderDashboard():state.view==='members'?renderMembers():state.view==='fees'?renderFees():state.view==='payments'?renderPayments():state.view==='cantina'?renderCantina():renderSettings();
   app.innerHTML=shell(content);
-  requestAnimationFrame(() => window.scrollTo(0, previousScrollY));
+  requestAnimationFrame(() => restoreScrollState(scrollState));
 }
 
 function openPayment(memberId='', payment=null, forcedPeriod='') {
@@ -713,8 +752,23 @@ app.addEventListener('click', async event => {
   if(action==='sync-drive'){await syncNow(true);return;}
   if(action==='disconnect-drive'){await disconnectGoogle();state.token=null;state.sync={kind:'local',text:'Guardado local · Drive sin conectar',lastAt:state.sync.lastAt};render();return;}
   if(action==='export-backup'){exportBackup(state.data,state.account?.email);toast('Respaldo descargado.');return;}
-  if(action==='export-legacy'){try{exportLegacyLocalData();toast('Datos anteriores descargados.');}catch(e){toast(e.message,'error');}return;}
-  if(action==='install-app'&&installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;render();return;}
+  if(action==='open-clear-data'){state.modal={type:'clear-data',errors:[],draft:{phrase:''}};render();return;}
+  if(action==='confirm-clear-data'){
+    if(state.modal?.type!=='clear-data'||state.modal.draft.phrase!==CLEAR_PHRASE)return;
+    if(!navigator.onLine){state.modal.errors=['Necesitás internet para borrar también la copia de Drive.'];render();return;}
+    try {
+      let token=state.token||await restoreGoogleToken(clientId());
+      if(!token){const login=await ensureDriveLogin({selectAccount:false});if(login.email!==state.account.email)throw new Error(`Conectá Drive con ${state.account.email}.`);token=login.token;}
+      state.token=token;
+      const reset=emptyData(`north-south-academy-main:${crypto.randomUUID()}`);
+      const remote=await resetDriveData(reset,token);
+      state.data=overwriteData(state.account.email,remote.data,{markDirty:false});
+      state.syncedOperationIds=new Set();
+      state.modal=null;state.view='dashboard';state.sync={kind:'ok',text:'Drive al día',lastAt:nowISO()};
+      render({preserveScroll:false});toast('Todos los datos fueron borrados.');
+    } catch(e){console.error(e);state.modal.errors=[e.message||'No se pudieron borrar los datos.'];render();}
+    return;
+  }
 });
 
 app.addEventListener('click', event => {
@@ -731,9 +785,20 @@ app.addEventListener('input', event => {
   if(id==='fee-search'){state.feeQuery=event.target.value;rerenderFocused(id,caret);return;}
   if(id==='cantina-search'){state.cantinaQuery=event.target.value;rerenderFocused(id,caret);return;}
   if(event.target.dataset.memberPicker&&state.modal){state.modal.draft.memberQuery=event.target.value;state.modal.draft.memberId='';state.modal.draft.memberPickerOpen=true;rerenderFocused(id,caret);return;}
-  if(id==='payment-amount'&&state.modal?.type==='payment'){state.modal.draft.amount=event.target.value;rerenderFocused(id,caret);return;}
-  if(id==='sale-quantity'&&state.modal?.type==='sale'){state.modal.draft.quantity=Number(event.target.value||1);rerenderFocused(id,caret);return;}
-  if(id==='sale-unit-price'&&state.modal?.type==='sale'){state.modal.draft.unitPrice=Number(event.target.value||0);rerenderFocused(id,caret);return;}
+  if(id==='payment-amount'&&state.modal?.type==='payment'){
+    state.modal.draft.amount=event.target.value;
+    const entered=Number(event.target.value||0),member=getMember(state.modal.draft.memberId),months=state.modal.id?1:Number(state.modal.draft.months||1);
+    const due=member?paymentDue(member,state.modal.draft.period,months,state.modal.id):{total:0};
+    const advance=!state.modal.id&&months===1?Math.max(0,entered-due.total):0,after=Math.max(0,due.total-entered);
+    const label=document.querySelector('[data-payment-result-label]'),value=document.querySelector('[data-payment-result-value]'),save=document.querySelector('[data-action="save-payment"]');
+    if(label)label.textContent=advance>0?'Adelanto a meses siguientes':'Después de este pago';
+    if(value){value.textContent=advance>0?money(advance):after===0?'Queda pago':`Queda ${money(after)}`;value.className=after===0?'good-text':'warn-text';}
+    if(save)save.disabled=!member||entered<=0;
+    return;
+  }
+  if(id==='sale-quantity'&&state.modal?.type==='sale'){state.modal.draft.quantity=Number(event.target.value||1);const total=Number(state.modal.draft.quantity||1)*Number(state.modal.draft.unitPrice||0),out=document.querySelector('[data-sale-total]'),save=document.querySelector('[data-action="save-sale"]');if(out)out.textContent=money(total);if(save)save.disabled=!getProduct(state.modal.draft.productId)||total<=0;return;}
+  if(id==='sale-unit-price'&&state.modal?.type==='sale'){state.modal.draft.unitPrice=Number(event.target.value||0);const total=Number(state.modal.draft.quantity||1)*Number(state.modal.draft.unitPrice||0),out=document.querySelector('[data-sale-total]'),save=document.querySelector('[data-action="save-sale"]');if(out)out.textContent=money(total);if(save)save.disabled=!getProduct(state.modal.draft.productId)||total<=0;return;}
+  if(id==='clear-data-phrase'&&state.modal?.type==='clear-data'){state.modal.draft.phrase=event.target.value;const btn=document.querySelector('[data-action="confirm-clear-data"]');if(btn)btn.disabled=event.target.value!==CLEAR_PHRASE;return;}
 });
 
 app.addEventListener('change', async event => {
@@ -753,7 +818,7 @@ app.addEventListener('change', async event => {
   }
   if(event.target.id==='payment-period'){state.paymentPeriod=event.target.value;render();return;}
   if(event.target.id==='payment-method-filter'){state.paymentMethod=event.target.value;render();return;}
-  if(event.target.id==='backup-file'&&event.target.files?.[0]){if(!confirm('¿Importar estos datos en la cuenta actual?')){event.target.value='';return;}try{state.data=await importBackup(event.target.files[0],state.account?.email,{save:false});persist('Respaldo importado.');}catch(e){toast(e.message||'No se pudo importar.','error');}return;}
+  if(event.target.id==='backup-file'&&event.target.files?.[0]){if(!confirm('¿Importar estos datos en la cuenta actual?')){event.target.value='';return;}try{state.data=await importBackup(event.target.files[0],state.account?.email,{save:false,targetDatasetId:state.data.datasetId});persist('Respaldo importado.');}catch(e){toast(e.message||'No se pudo importar.','error');}return;}
 });
 
 app.addEventListener('submit', event => {
@@ -830,8 +895,8 @@ document.addEventListener('keydown',event=>{if(event.key==='Escape'&&state.modal
 window.addEventListener('online',()=>{state.sync={...state.sync,kind:'local',text:'Conexión recuperada'};render();scheduleSync();});
 window.addEventListener('offline',()=>{state.sync={...state.sync,kind:'offline',text:'Sin conexión · guardado local'};render();});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')scheduleSync();});
-window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();installPrompt=event;render();});
-window.addEventListener('appinstalled',()=>{installPrompt=null;toast('Aplicación instalada en esta PC.');});
+
+window.addEventListener('resize',()=>{if(state.view==='fees'&&compactViewport())navigate('payments');});
 
 if(import.meta.env?.DEV && 'serviceWorker' in navigator){
   // Evita que una PWA vieja instalada en localhost siga sirviendo JS anterior durante desarrollo.

@@ -1,7 +1,6 @@
 import { nowISO } from './utils.js';
 import { normalizeOperation } from './operation-format.js';
 
-export const LEGACY_DATA_KEY = 'northsouth:data:v1';
 const DATA_PREFIX = 'northsouth:data:v4:';
 const BACKUP_PREFIX = 'northsouth:data:backup:v4:';
 const DEVICE_KEY = 'northsouth:device-id:v1';
@@ -114,10 +113,10 @@ export function normalizeData(input) {
   };
 }
 
-export function emptyData() {
+export function emptyData(datasetId = 'north-south-academy-main') {
   const timestamp = nowISO();
   return normalizeData({
-    schemaVersion: 4, datasetId: 'north-south-academy-main',
+    schemaVersion: 4, datasetId,
     settings: {
       academyName: 'North South Academy', defaultFee: 2500, currency: 'UYU', lastPaymentMethod: 'cash', lastSaleMethod: 'cash',
       updatedAt: timestamp, feeHistory: [{ id:'fee-initial', effectiveFrom:'1900-01', amount:2500, createdAt:timestamp, updatedAt:timestamp, deletedAt:null }]
@@ -158,6 +157,22 @@ export function saveData(email, data, { markDirty = true } = {}) {
   return normalizeData(JSON.parse(verified));
 }
 
+
+export function overwriteData(email, data, { markDirty = true } = {}) {
+  if (!email) throw new Error('No hay una cuenta activa para guardar.');
+  const normalized = normalizeData(clone(data));
+  const timestamp = nowISO();
+  normalized.meta.updatedAt = timestamp;
+  normalized.meta.ownerEmail = String(email).trim().toLowerCase();
+  normalized.meta.localRevision = numberOr(normalized.meta.localRevision, 0) + 1;
+  if (markDirty) normalized.meta.localDirtyAt = timestamp;
+  const serialized = JSON.stringify(normalized);
+  localStorage.removeItem(backupKeyFor(email));
+  localStorage.setItem(dataKeyFor(email), serialized);
+  if (localStorage.getItem(dataKeyFor(email)) !== serialized) throw new Error('No se pudo confirmar el guardado local.');
+  return normalizeData(JSON.parse(serialized));
+}
+
 export function verifyLocalStorage() {
   const key = 'northsouth:storage-check';
   const value = `${Date.now()}-${Math.random()}`;
@@ -169,21 +184,10 @@ export function verifyLocalStorage() {
   } catch { return false; }
 }
 
-export function hasLegacyLocalData() {
-  try { return Boolean(localStorage.getItem(LEGACY_DATA_KEY)); }
-  catch { return false; }
-}
-
 function downloadJSON(data, filename) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
-}
-
-export function exportLegacyLocalData() {
-  const raw = localStorage.getItem(LEGACY_DATA_KEY);
-  if (!raw) throw new Error('No hay datos de una versión anterior en este navegador.');
-  downloadJSON(normalizeData(JSON.parse(raw)), 'north-south-datos-version-anterior.json');
 }
 
 export function getDeviceId() {
@@ -197,10 +201,14 @@ export function exportBackup(data, email = '') {
   downloadJSON(normalizeData(data), `north-south-${account}-${new Date().toISOString().slice(0,10)}.json`);
 }
 
-export async function importBackup(file, email, { save = true } = {}) {
+export async function importBackup(file, email, { save = true, targetDatasetId = '' } = {}) {
   const text = await file.text();
   const parsed = normalizeData(JSON.parse(text));
-  if (parsed.datasetId !== 'north-south-academy-main') throw new Error('El archivo no pertenece a North South.');
+  if (!String(parsed.datasetId || '').startsWith('north-south-academy-main')) throw new Error('El archivo no pertenece a North South.');
+  if (targetDatasetId) {
+    parsed.datasetId = targetDatasetId;
+    parsed.operations = [];
+  }
   parsed.meta.ownerEmail = String(email || '').trim().toLowerCase();
   return save ? saveData(email, parsed) : parsed;
 }

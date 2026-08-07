@@ -190,17 +190,47 @@ async function findValidSnapshot(token, files) {
   return { file: null, data: null };
 }
 
+export async function resetDriveData(dataInput, token) {
+  if (!navigator.onLine) throw new Error('Necesitás internet para borrar también la copia de Drive.');
+  const data = normalizeData(dataInput);
+
+  // Primero publica la nueva generación. Así, cualquier otro equipo que sincronice
+  // durante el borrado ve el reset antes de poder reintroducir la generación vieja.
+  const created = await createSnapshot(token, data);
+  const keepId = created.file.id;
+
+  for (let pass = 0; pass < 2; pass++) {
+    const files = await listRemoteFiles(token);
+    for (const file of files) {
+      if (file.id === keepId) continue;
+      await request(`${API}/files/${file.id}`, token, { method: 'DELETE' });
+    }
+    if (pass === 0) await wait(180);
+  }
+
+  return { data: created.payload, fileId: keepId };
+}
+
 export async function syncWithDrive(localInput, token) {
   if (!navigator.onLine) throw new Error('No hay internet. Los cambios siguen guardados en este dispositivo.');
 
   let localData = normalizeData(localInput);
   const initialFiles = await listRemoteFiles(token);
   const snapshot = await findValidSnapshot(token, initialFiles);
+
+  // El snapshot más reciente define la generación vigente. Si otro equipo hizo
+  // un borrado total, una copia vieja adopta esa nueva generación en vez de
+  // volver a subir datos anteriores.
+  if (snapshot.data && localData.datasetId !== snapshot.data.datasetId) {
+    localData = normalizeData(snapshot.data);
+  }
+
   const initialOperationFiles = operationFiles(initialFiles);
-  const snapshotOperations = snapshot.data?.operations || [];
+  const snapshotOperations = snapshot.data?.datasetId === localData.datasetId ? (snapshot.data.operations || []) : [];
+  localData.operations = (localData.operations || []).filter(op => op.datasetId === localData.datasetId);
   const knownIds = new Set([...localData.operations, ...snapshotOperations].map(op => op.id));
-  const downloadedOperations = await downloadUnknownOperations(token, initialOperationFiles, knownIds);
-  let operations = mergeOperations(mergeOperations(localData.operations, snapshotOperations), downloadedOperations);
+  const downloadedOperations = (await downloadUnknownOperations(token, initialOperationFiles, knownIds)).filter(op => op.datasetId === localData.datasetId);
+  let operations = mergeOperations(mergeOperations(localData.operations, snapshotOperations.filter(op => op.datasetId === localData.datasetId)), downloadedOperations);
 
   // El snapshot acelera la carga y mantiene compatibilidad con versiones anteriores.
   // El log de operaciones es el que evita perder cambios concurrentes.
@@ -222,7 +252,7 @@ export async function syncWithDrive(localInput, token) {
   const finalFiles = await listRemoteFiles(token);
   const finalOperationFiles = operationFiles(finalFiles);
   const finalKnownIds = new Set(operations.map(op => op.id));
-  const concurrentOperations = await downloadUnknownOperations(token, finalOperationFiles, finalKnownIds);
+  const concurrentOperations = (await downloadUnknownOperations(token, finalOperationFiles, finalKnownIds)).filter(op => op.datasetId === localData.datasetId);
   if (concurrentOperations.length) {
     operations = mergeOperations(operations, concurrentOperations);
     merged = applyOperations(merged, concurrentOperations);

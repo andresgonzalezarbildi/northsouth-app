@@ -54,3 +54,11 @@ test('el log de operaciones se conserva en almacenamiento local', () => {
   saveData(EMAIL,d);
   assert.equal(loadData(EMAIL).operations[0].id,'op-local');
 });
+
+test('emptyData puede iniciar una generación nueva sin cambiar el formato', async () => {
+  const { emptyData } = await import('../src/storage.js');
+  const d = emptyData('north-south-academy-main:test-generation');
+  assert.equal(d.datasetId, 'north-south-academy-main:test-generation');
+  assert.equal(d.members.length, 0);
+  assert.equal(d.operations.length, 0);
+});
