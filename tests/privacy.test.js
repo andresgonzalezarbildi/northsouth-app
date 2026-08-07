@@ -33,5 +33,5 @@ test('la PWA prioriza el deploy actual y usa la caché solo como respaldo', asyn
   const sw = await readFile(new URL('../public/sw.js', import.meta.url), 'utf8');
   assert.match(sw, /fetch\(event\.request, \{ cache: 'no-store' \}\)/);
   assert.match(sw, /caches\.match\(event\.request\)/);
-  assert.match(sw, /north-south-v6-1/);
+  assert.match(sw, /north-south-v6-2/);
 });

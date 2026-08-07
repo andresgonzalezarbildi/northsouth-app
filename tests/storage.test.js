@@ -47,3 +47,10 @@ test('el estado inactivo de un producto queda guardado', () => {
   saveData(EMAIL,d);
   assert.equal(loadData(EMAIL).products.find(x=>x.id==='prod-new').active,false);
 });
+
+test('el log de operaciones se conserva en almacenamiento local', () => {
+  const d=loadData(EMAIL);
+  d.operations=[{id:'op-local',datasetId:'north-south-academy-main',label:'Pago guardado.',createdAt:'2026-08-07T12:00:00Z',deviceId:'pc-a',changes:[{collection:'payments',record:{id:'p-op',memberId:'m-new',period:'2026-08',amount:500,createdAt:'2026-08-07T12:00:00Z',updatedAt:'2026-08-07T12:00:00Z',deletedAt:null}}]}];
+  saveData(EMAIL,d);
+  assert.equal(loadData(EMAIL).operations[0].id,'op-local');
+});

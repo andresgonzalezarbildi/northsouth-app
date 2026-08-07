@@ -1,16 +1,17 @@
-# North South Academy — v6.1
+# North South Academy — v6.2
 
 Gestión de socios, cuotas, pagos y cantina. El mismo frontend sirve para web/PWA de escritorio y para Android mediante Capacitor.
 
-## Qué cambió en v6.1
+## Qué cambió en v6.2
 
-- La sincronización de Drive tolera reintentos de red y copias remotas vacías/incompletas.
-- La primera copia de datos en `appDataFolder` se crea de forma atómica con contenido, evitando archivos vacíos si una solicitud se corta.
-- La PWA usa network-first para no dejar una PC ejecutando un `app.js` viejo después de un deploy.
-- Los pagos que superan el saldo del mes se distribuyen automáticamente a los meses siguientes.
-- El campo de monto conserva correctamente los ceros mientras se escribe.
-- Cantina permite ventas sin socio y las identifica como `Venta sin socio`.
-- La opción de rescatar datos de una versión anterior solo aparece si la cuenta actual todavía está vacía.
+- Cada acción se guarda inmediatamente en el dispositivo y genera una operación con ID único.
+- Drive sincroniza esas operaciones como archivos independientes e inmutables, evitando que dos PCs pisen el mismo cambio al trabajar a la vez.
+- La app mantiene `north-south-data.json` como snapshot materializado por compatibilidad y velocidad, pero el log de operaciones conserva los cambios concurrentes.
+- Si una sincronización termina mientras el usuario hizo otro cambio, el resultado se combina con el estado actual en vez de reemplazarlo.
+- Ajustes incluye un **Registro de cambios** con acciones recientes y estado local/Drive.
+- Borrar pagos es directo desde el historial. Si el cobro se distribuyó en varios meses, se elimina el lote completo.
+- Los borrados de productos, pagos y ventas quedan como tombstones dentro del log para que otro dispositivo no los haga reaparecer.
+- Los respaldos importados también generan una operación y entran al mismo mecanismo de sincronización.
 
 ## Base heredada de v6
 
@@ -105,7 +106,7 @@ http://localhost:5173
 
 Al pulsar **Ingresar con Google**, la app solicita identidad y acceso únicamente a `drive.appdata`. No hay una clave OAuth que el usuario deba escribir.
 
-La sincronización guarda `north-south-data.json` en `appDataFolder` de Google Drive y fusiona registros por ID/fecha antes de escribir, para no reemplazar indiscriminadamente los cambios locales de otro dispositivo.
+La sincronización usa exclusivamente `appDataFolder`. Mantiene `north-south-data.json` como snapshot y, además, guarda cada acción nueva como un archivo `north-south-op-*.json` independiente. De esta forma dos dispositivos pueden subir cambios a la vez sin sobrescribir el archivo de la otra operación; al sincronizar se reúnen y reaplican todos los eventos conocidos.
 
 ### Importante sobre varias cuentas
 
@@ -160,4 +161,4 @@ El Web Client ID sigue configurado en `.env`; no se escribe desde la app.
 npm test
 ```
 
-Actualmente: **29/29 tests pasando**.
+Actualmente: **36/36 tests pasando**.

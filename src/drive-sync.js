@@ -1,8 +1,11 @@
 import { mergeData } from './merge.js';
+import { applyOperations, mergeOperations } from './journal.js';
+import { normalizeOperation } from './operation-format.js';
 import { getDeviceId, normalizeData } from './storage.js';
 import { nowISO } from './utils.js';
 
 const FILE_NAME = 'north-south-data.json';
+const OP_PREFIX = 'north-south-op-';
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 
@@ -47,16 +50,24 @@ async function request(url, token, options = {}) {
   throw new Error(`No se pudo completar la solicitud a Google Drive${lastNetworkError?.message ? `: ${lastNetworkError.message}` : '.'}`);
 }
 
-async function findRemoteFiles(token) {
-  const url = `${API}/files?spaces=appDataFolder&fields=files(id,name,modifiedTime,size)&pageSize=100`;
-  const res = await request(url, token);
-  const json = await res.json();
-  return (json.files || [])
-    .filter(file => file?.name === FILE_NAME)
-    .sort((a, b) => String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || '')));
+async function listRemoteFiles(token) {
+  const files = [];
+  let pageToken = '';
+  do {
+    const params = new URLSearchParams({
+      fields: 'nextPageToken,files(id,name,modifiedTime,size)',
+      pageSize: '1000'
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    const res = await request(`${API}/files?spaces=appDataFolder&${params.toString()}`, token);
+    const json = await res.json();
+    files.push(...(json.files || []));
+    pageToken = json.nextPageToken || '';
+  } while (pageToken);
+  return files;
 }
 
-async function downloadRemote(token, fileId) {
+async function downloadJSON(token, fileId) {
   const res = await request(`${API}/files/${fileId}?alt=media`, token);
   const text = await res.text();
   if (!text.trim()) {
@@ -64,13 +75,26 @@ async function downloadRemote(token, fileId) {
     error.code = 'INVALID_REMOTE_DATA';
     throw error;
   }
-  try {
-    return normalizeData(JSON.parse(text));
-  } catch {
+  try { return JSON.parse(text); }
+  catch {
     const error = new Error('El archivo remoto no contiene datos válidos.');
     error.code = 'INVALID_REMOTE_DATA';
     throw error;
   }
+}
+
+async function downloadSnapshot(token, fileId) {
+  return normalizeData(await downloadJSON(token, fileId));
+}
+
+async function downloadOperation(token, fileId) {
+  const operation = normalizeOperation(await downloadJSON(token, fileId));
+  if (!operation) {
+    const error = new Error('La operación remota no es válida.');
+    error.code = 'INVALID_REMOTE_DATA';
+    throw error;
+  }
+  return operation;
 }
 
 function preparePayload(data) {
@@ -85,10 +109,9 @@ function preparePayload(data) {
   return payload;
 }
 
-async function createRemote(token, data) {
-  const payload = preparePayload(data);
+async function createJSONFile(token, name, payload) {
   const boundary = `northsouth-${crypto.randomUUID()}`;
-  const metadata = JSON.stringify({ name: FILE_NAME, parents: ['appDataFolder'], mimeType: 'application/json' });
+  const metadata = JSON.stringify({ name, parents: ['appDataFolder'], mimeType: 'application/json' });
   const body = [
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`,
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(payload)}\r\n`,
@@ -99,10 +122,16 @@ async function createRemote(token, data) {
     headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
     body
   });
-  return { file: await res.json(), payload };
+  return await res.json();
 }
 
-async function uploadRemote(token, fileId, data) {
+async function createSnapshot(token, data) {
+  const payload = preparePayload(data);
+  const file = await createJSONFile(token, FILE_NAME, payload);
+  return { file, payload };
+}
+
+async function uploadSnapshot(token, fileId, data) {
   const payload = preparePayload(data);
   await request(`${UPLOAD}/files/${fileId}?uploadType=media&fields=id,modifiedTime`, token, {
     method: 'PATCH',
@@ -112,38 +141,106 @@ async function uploadRemote(token, fileId, data) {
   return payload;
 }
 
-export async function syncWithDrive(localData, token) {
-  if (!navigator.onLine) throw new Error('No hay internet. Los cambios siguen guardados en este dispositivo.');
+const operationFileName = operation => `${OP_PREFIX}${operation.id}.json`;
+const operationIdFromName = name => {
+  if (!String(name || '').startsWith(OP_PREFIX) || !String(name).endsWith('.json')) return null;
+  return String(name).slice(OP_PREFIX.length, -5) || null;
+};
 
-  const candidates = await findRemoteFiles(token);
-  let file = null;
-  let remote = null;
+async function uploadOperation(token, operation) {
+  return createJSONFile(token, operationFileName(operation), operation);
+}
 
-  for (const candidate of candidates) {
+function operationFiles(files) {
+  const map = new Map();
+  files.forEach(file => {
+    const id = operationIdFromName(file?.name);
+    if (id && !map.has(id)) map.set(id, file);
+  });
+  return map;
+}
+
+async function downloadUnknownOperations(token, filesByOperationId, knownIds) {
+  const rows = [];
+  for (const [operationId, file] of filesByOperationId) {
+    if (knownIds.has(operationId)) continue;
     try {
-      remote = await downloadRemote(token, candidate.id);
-      file = candidate;
-      break;
+      const operation = await downloadOperation(token, file.id);
+      rows.push(operation);
+      knownIds.add(operation.id);
     } catch (error) {
+      if (error?.code !== 'INVALID_REMOTE_DATA') throw error;
+      console.warn(`Se ignoró una operación remota inválida (${operationId}).`, error);
+    }
+  }
+  return rows;
+}
+
+async function findValidSnapshot(token, files) {
+  const candidates = files
+    .filter(file => file?.name === FILE_NAME)
+    .sort((a, b) => String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || '')));
+  for (const file of candidates) {
+    try { return { file, data: await downloadSnapshot(token, file.id) }; }
+    catch (error) {
       if (error?.code !== 'INVALID_REMOTE_DATA') throw error;
       console.warn(`Se ignoró una copia remota inválida de ${FILE_NAME}.`, error);
     }
   }
+  return { file: null, data: null };
+}
 
-  if (!file || !remote) {
-    const created = await createRemote(token, localData);
-    return { data: created.payload, created: true };
+export async function syncWithDrive(localInput, token) {
+  if (!navigator.onLine) throw new Error('No hay internet. Los cambios siguen guardados en este dispositivo.');
+
+  let localData = normalizeData(localInput);
+  const initialFiles = await listRemoteFiles(token);
+  const snapshot = await findValidSnapshot(token, initialFiles);
+  const initialOperationFiles = operationFiles(initialFiles);
+  const snapshotOperations = snapshot.data?.operations || [];
+  const knownIds = new Set([...localData.operations, ...snapshotOperations].map(op => op.id));
+  const downloadedOperations = await downloadUnknownOperations(token, initialOperationFiles, knownIds);
+  let operations = mergeOperations(mergeOperations(localData.operations, snapshotOperations), downloadedOperations);
+
+  // El snapshot acelera la carga y mantiene compatibilidad con versiones anteriores.
+  // El log de operaciones es el que evita perder cambios concurrentes.
+  let merged = snapshot.data ? mergeData(localData, snapshot.data) : localData;
+  merged = applyOperations(merged, operations);
+  merged.operations = operations;
+
+  // Cada operación se crea como un archivo inmutable e independiente. Dos equipos pueden
+  // subir a la vez sin escribir sobre el mismo archivo.
+  let uploadedCount = 0;
+  for (const operation of operations) {
+    if (initialOperationFiles.has(operation.id)) continue;
+    await uploadOperation(token, operation);
+    initialOperationFiles.set(operation.id, { id: operation.id, name: operationFileName(operation) });
+    uploadedCount++;
   }
 
-  // Se mezcla registro por registro antes de escribir y se verifica otra vez después,
-  // para conservar cambios hechos casi al mismo tiempo desde dos dispositivos.
-  let merged = mergeData(localData, remote);
-  await uploadRemote(token, file.id, merged);
-  const verifyRemote = await downloadRemote(token, file.id);
-  const verified = mergeData(merged, verifyRemote);
-  if (JSON.stringify(verified) !== JSON.stringify(merged)) {
-    merged = verified;
-    await uploadRemote(token, file.id, merged);
+  // Segunda lectura: recoge operaciones que otro equipo haya subido mientras éste sincronizaba.
+  const finalFiles = await listRemoteFiles(token);
+  const finalOperationFiles = operationFiles(finalFiles);
+  const finalKnownIds = new Set(operations.map(op => op.id));
+  const concurrentOperations = await downloadUnknownOperations(token, finalOperationFiles, finalKnownIds);
+  if (concurrentOperations.length) {
+    operations = mergeOperations(operations, concurrentOperations);
+    merged = applyOperations(merged, concurrentOperations);
+    merged.operations = operations;
   }
-  return { data: merged, created: false };
+
+  // Snapshot materializado: si dos equipos lo pisan no se pierden operaciones, porque éstas
+  // quedan guardadas por separado y se vuelven a aplicar en la próxima sincronización.
+  const finalSnapshot = snapshot.file
+    ? await uploadSnapshot(token, snapshot.file.id, merged)
+    : (await createSnapshot(token, merged)).payload;
+  finalSnapshot.operations = operations;
+
+  return {
+    data: finalSnapshot,
+    created: !snapshot.file,
+    uploadedCount,
+    downloadedCount: downloadedOperations.length + concurrentOperations.length,
+    remoteOperationIds: [...finalOperationFiles.keys(), ...operations.filter(op => !finalOperationFiles.has(op.id)).map(op => op.id)]
+  };
 }

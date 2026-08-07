@@ -1,4 +1,5 @@
 import { nowISO } from './utils.js';
+import { normalizeOperation } from './operation-format.js';
 
 export const LEGACY_DATA_KEY = 'northsouth:data:v1';
 const DATA_PREFIX = 'northsouth:data:v4:';
@@ -108,6 +109,7 @@ export function normalizeData(input) {
       createdAt: s.createdAt || s.soldAt || s.updatedAt || timestamp,
       updatedAt: s.updatedAt || s.createdAt || s.soldAt || timestamp, deletedAt: s.deletedAt || null
     })),
+    operations: (Array.isArray(data.operations) ? data.operations : []).map(normalizeOperation).filter(Boolean),
     meta: { ...(data.meta || {}), localRevision: numberOr(data.meta?.localRevision, 0), updatedAt: data.meta?.updatedAt || timestamp }
   };
 }
@@ -120,7 +122,7 @@ export function emptyData() {
       academyName: 'North South Academy', defaultFee: 2500, currency: 'UYU', lastPaymentMethod: 'cash', lastSaleMethod: 'cash',
       updatedAt: timestamp, feeHistory: [{ id:'fee-initial', effectiveFrom:'1900-01', amount:2500, createdAt:timestamp, updatedAt:timestamp, deletedAt:null }]
     },
-    members: [], payments: [], products: [], sales: [], meta: { updatedAt: timestamp, localRevision: 0 }
+    members: [], payments: [], products: [], sales: [], operations: [], meta: { updatedAt: timestamp, localRevision: 0 }
   });
 }
 
@@ -195,10 +197,10 @@ export function exportBackup(data, email = '') {
   downloadJSON(normalizeData(data), `north-south-${account}-${new Date().toISOString().slice(0,10)}.json`);
 }
 
-export async function importBackup(file, email) {
+export async function importBackup(file, email, { save = true } = {}) {
   const text = await file.text();
   const parsed = normalizeData(JSON.parse(text));
   if (parsed.datasetId !== 'north-south-academy-main') throw new Error('El archivo no pertenece a North South.');
   parsed.meta.ownerEmail = String(email || '').trim().toLowerCase();
-  return saveData(email, parsed);
+  return save ? saveData(email, parsed) : parsed;
 }

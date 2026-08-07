@@ -1,9 +1,11 @@
 import {
   dataKeyFor, loadData, saveData, verifyLocalStorage, hasLegacyLocalData, exportLegacyLocalData,
-  exportBackup, importBackup
+  exportBackup, importBackup, getDeviceId
 } from './storage.js';
 import { connectGoogle, disconnectGoogle, getGoogleProfile, restoreGoogleToken } from './google-auth.js';
 import { syncWithDrive } from './drive-sync.js';
+import { createOperation, applyOperations, mergeOperations } from './journal.js';
+import { mergeData } from './merge.js';
 import { GOOGLE_WEB_CLIENT_ID } from './app-config.js';
 import { loadAuthSession, saveAuthSession, clearAuthSession, normalizeEmail } from './session.js';
 import {
@@ -16,7 +18,7 @@ import {
   normalizeText, nowISO, periodLabel, shortPeriodLabel, todayISO, uid
 } from './utils.js';
 
-const APP_VERSION = '6.1.0';
+const APP_VERSION = '6.2.0';
 const app = document.querySelector('#app');
 let installPrompt = null;
 
@@ -37,7 +39,7 @@ const state = {
     text: navigator.onLine ? (GOOGLE_WEB_CLIENT_ID ? 'Local · Drive sin conectar' : 'Guardado local') : 'Sin conexión · guardado local',
     lastAt: null
   },
-  syncing: false, syncTimer: null,
+  syncing: false, syncTimer: null, syncedOperationIds: new Set(),
   storageOK: verifyLocalStorage(), memberListScrollY: 0
 };
 
@@ -64,17 +66,31 @@ function toast(message, type = 'ok') {
   }, 2800);
 }
 
+function pendingOperationCount(data = state.data) {
+  return (data?.operations || []).filter(op => !state.syncedOperationIds.has(op.id)).length;
+}
+
 function persist(message = null, { sync = true } = {}) {
   if (!state.account?.email || !state.data) return false;
   try {
+    const before = loadData(state.account.email);
+    const operation = createOperation(before, state.data, {
+      label: message || 'Cambio guardado',
+      deviceId: getDeviceId()
+    });
+    if (operation) state.data.operations = mergeOperations(state.data.operations, [operation]);
+
     state.data = saveData(state.account.email, state.data);
     const reloaded = loadData(state.account.email);
     if (reloaded.meta.localRevision !== state.data.meta.localRevision) throw new Error('La verificación local devolvió otra revisión.');
     state.data = reloaded;
     state.storageOK = true;
-    state.sync = navigator.onLine
-      ? { ...state.sync, kind: state.token ? state.sync.kind : 'local', text: state.token ? state.sync.text : 'Guardado local · Drive sin conectar' }
-      : { ...state.sync, kind: 'offline', text: 'Sin conexión · guardado local' };
+    const pending = pendingOperationCount();
+    state.sync = !navigator.onLine
+      ? { ...state.sync, kind: 'offline', text: `Guardado local · ${pending || 1} cambio${pending === 1 ? '' : 's'} pendiente${pending === 1 ? '' : 's'}` }
+      : !state.token
+        ? { ...state.sync, kind: 'local', text: 'Guardado local · Drive sin conectar' }
+        : { ...state.sync, kind: 'pending', text: `Guardado · ${pending || 1} cambio${pending === 1 ? '' : 's'} pendiente${pending === 1 ? '' : 's'}` };
   } catch (e) {
     console.error(e);
     state.storageOK = false;
@@ -82,7 +98,7 @@ function persist(message = null, { sync = true } = {}) {
     return false;
   }
   render();
-  if (message) toast(message);
+  if (message) toast(`${message} Guardado en este dispositivo.`);
   if (sync) scheduleSync();
   return true;
 }
@@ -155,6 +171,7 @@ async function loginWithGoogle() {
     state.account = saveAuthSession({ email:login.email, name:login.profile?.name || '' });
     state.data = loadData(state.account.email);
     state.token = login.token;
+    state.syncedOperationIds = new Set();
     state.sync = { kind:'local', text:'Guardado local · preparando Drive', lastAt:null };
     state.view = 'dashboard';
     state.authBusy = false;
@@ -175,6 +192,7 @@ async function logout() {
   state.account = null;
   state.data = null;
   state.token = null;
+  state.syncedOperationIds = new Set();
   state.modal = null;
   state.toast = null;
   state.authError = '';
@@ -195,9 +213,11 @@ async function syncNow(interactive = false) {
     render();
     return;
   }
+  let syncSucceeded = false;
   try {
     state.syncing = true;
-    state.sync = { ...state.sync, kind:'busy', text:'Sincronizando…' };
+    const pendingBefore = pendingOperationCount();
+    state.sync = { ...state.sync, kind:'busy', text: pendingBefore ? `Guardado · sincronizando ${pendingBefore} cambio${pendingBefore===1?'':'s'}…` : 'Comprobando Drive…' };
     render();
     let token = state.token;
     if (!token) {
@@ -225,18 +245,34 @@ async function syncNow(interactive = false) {
       return;
     }
     state.token = token;
-    const result = await syncWithDrive(state.data, token);
-    state.data = saveData(state.account.email, result.data, { markDirty:false });
-    state.sync = { kind:'ok', text:'Drive al día', lastAt:nowISO() };
-    if (interactive) toast(result.created ? 'Drive conectado.' : 'Datos sincronizados.');
+    const syncStartData = structuredClone(state.data);
+    const result = await syncWithDrive(syncStartData, token);
+
+    // Si el usuario guardó algo mientras Drive estaba trabajando, se combina con el resultado
+    // en vez de reemplazar el estado actual por una copia iniciada unos segundos antes.
+    const operations = mergeOperations(state.data.operations, result.data.operations);
+    let combined = mergeData(state.data, result.data);
+    combined.operations = operations;
+    combined = applyOperations(combined, operations);
+    combined.operations = operations;
+    state.data = saveData(state.account.email, combined, { markDirty:false });
+    state.syncedOperationIds = new Set(result.remoteOperationIds || []);
+    const pendingAfter = pendingOperationCount();
+    state.sync = pendingAfter
+      ? { kind:'pending', text:`Guardado · ${pendingAfter} cambio${pendingAfter===1?'':'s'} pendiente${pendingAfter===1?'':'s'}`, lastAt:nowISO() }
+      : { kind:'ok', text:'Drive al día', lastAt:nowISO() };
+    syncSucceeded = true;
+    if (interactive) toast(pendingAfter ? 'Los cambios locales están guardados; queda sincronización pendiente.' : (result.created ? 'Drive conectado.' : 'Datos sincronizados.'));
   } catch (e) {
     console.error(e);
-    state.sync = { ...state.sync, kind:'error', text:'Drive pendiente', lastAt:state.sync.lastAt };
+    const pending = pendingOperationCount();
+    state.sync = { ...state.sync, kind:'error', text:pending?`Guardado local · ${pending} cambio${pending===1?'':'s'} pendiente${pending===1?'':'s'}`:'Drive pendiente', lastAt:state.sync.lastAt };
     if (interactive) toast(e.message || 'No se pudo sincronizar.', 'error');
     if (/venció|401/i.test(e.message || '')) state.token = null;
   } finally {
     state.syncing = false;
     render();
+    if (syncSucceeded && state.token && navigator.onLine && pendingOperationCount() > 0) scheduleSync();
   }
 }
 
@@ -458,7 +494,7 @@ function renderPayments() {
       <select id="payment-method-filter"><option value="all">Todos los medios</option>${[['cash','Efectivo'],['transfer','Transferencia'],['other','Otro'],['unknown','Sin especificar']].map(([v,l])=>`<option value="${v}" ${state.paymentMethod===v?'selected':''}>${l}</option>`).join('')}</select>
     </div>
     <section class="card panel"><div class="panel-head"><div><div class="panel-title">Pagos registrados</div><div class="panel-subtitle">${rows.length} movimientos · ordenados por agregado</div></div><div class="amount">${money(total)}</div></div>
-      <div class="list">${rows.map(p => { const m=getMember(p.memberId); return `<div class="row-card"><div class="avatar">${initials(m?memberName(m):'?')}</div><div class="row-main"><div class="row-title">${escapeHTML(m?memberName(m):'Socio no disponible')}</div><div class="row-sub">${shortPeriodLabel(p.period)} · cobro ${dateLabel(p.paidAt)} · agregado ${dateTimeLabel(p.createdAt)} · ${methodLabel(p.method)}${p.note&&p.note!=='Importado de la planilla original'?` · ${escapeHTML(p.note)}`:''}</div></div><div class="amount">${money(p.amount)}</div><button class="btn small ghost" data-action="edit-payment" data-id="${p.id}">Editar</button></div>`; }).join('') || '<div class="empty">No hay pagos para este filtro.</div>'}</div>
+      <div class="list">${rows.map(p => { const m=getMember(p.memberId); return `<div class="row-card"><div class="avatar">${initials(m?memberName(m):'?')}</div><div class="row-main"><div class="row-title">${escapeHTML(m?memberName(m):'Socio no disponible')}</div><div class="row-sub">${shortPeriodLabel(p.period)} · cobro ${dateLabel(p.paidAt)} · agregado ${dateTimeLabel(p.createdAt)} · ${methodLabel(p.method)}${p.note&&p.note!=='Importado de la planilla original'?` · ${escapeHTML(p.note)}`:''}</div></div><div class="amount">${money(p.amount)}</div><div class="row-actions"><button class="btn small ghost" data-action="edit-payment" data-id="${p.id}">Editar</button><button class="btn small danger ghost-danger" data-action="delete-payment" data-id="${p.id}">Eliminar</button></div></div>`; }).join('') || '<div class="empty">No hay pagos para este filtro.</div>'}</div>
     </section>`;
 }
 
@@ -486,6 +522,9 @@ function renderSettings() {
   const driveReady = Boolean(clientId());
   const hasCurrentData = Boolean(live(state.data.members).length || livePayments(state.data).length || live(state.data.products).length || liveSales(state.data).length);
   const legacyAvailable = !hasCurrentData && hasLegacyLocalData();
+  const deviceId = getDeviceId();
+  const activity = (state.data.operations || []).slice().sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,20);
+  const pending = pendingOperationCount();
   return `<div class="settings-grid">
     <section class="card settings-card"><h3>Cuota general</h3><p>Los meses anteriores conservan el valor que tenían.</p><form id="fee-form" class="form-grid compact-form"><div class="field"><label>Nueva cuota</label><input name="defaultFee" type="number" min="1" step="1" value="${Number(state.data.settings.defaultFee)}"></div><div class="field"><label>Rige desde</label><input name="effectiveFrom" type="month" value="${currentPeriod()}"></div><div class="field full"><button class="btn primary" type="submit">Guardar cuota</button></div></form></section>
     <section class="card settings-card"><h3>Sincronización con Drive</h3><p>La app guarda primero en este equipo. Drive combina los cambios cuando hay conexión.</p><div class="sync-settings"><div><span class="sync-pill ${state.sync.kind}"><span class="sync-dot"></span>${escapeHTML(state.sync.text)}</span><small>${escapeHTML(state.account.email)}</small></div><div class="settings-actions"><button class="btn primary" data-action="sync-drive" ${driveReady?'':'disabled'}>${state.token?'Sincronizar ahora':'Conectar Drive'}</button></div></div>${!driveReady?'<small class="settings-note">Google se configura en .env, no dentro de la aplicación.</small>':''}</section>
@@ -493,6 +532,7 @@ function renderSettings() {
     <section class="card settings-card"><h3>App en esta PC</h3><p>Al instalarla abre en su propia ventana y sigue usando el almacenamiento local aunque no haya internet.</p>${installPrompt?'<div class="settings-actions"><button class="btn" data-action="install-app">Instalar aplicación</button></div>':'<small class="settings-note">El botón aparece al abrir la versión publicada por HTTPS en Chrome o Edge. En localhost usá npm run dev o ABRIR-APP-LOCAL.bat.</small>'}</section>
     <section class="card settings-card"><h3>Cuenta</h3><div class="account-card"><div><strong>${escapeHTML(state.account.name || state.account.email)}</strong><small>${escapeHTML(state.account.email)}</small></div><button class="btn ghost" data-action="logout">Cerrar sesión</button></div></section>
     <section class="card settings-card"><h3>Datos</h3><div class="detail-grid"><div class="detail-stat"><span>Socios</span><strong>${live(state.data.members).length}</strong></div><div class="detail-stat"><span>Activos</span><strong>${activeMembers(state.data).length}</strong></div><div class="detail-stat"><span>Pagos importados</span><strong>${imported}</strong></div><div class="detail-stat"><span>Ventas cantina</span><strong>${liveSales(state.data).length}</strong></div></div><small class="settings-note">Versión ${APP_VERSION} · almacenamiento local ${state.storageOK?'activo':'con problema'}</small></section>
+    <section class="card settings-card settings-wide"><div class="activity-head"><div><h3>Registro de cambios</h3><p>Cada acción se guarda primero acá y después se copia a Drive como una operación independiente.</p></div><span class="badge ${pending?'warn':'ok'}">${pending?`${pending} pendiente${pending===1?'':'s'}`:'Todo sincronizado'}</span></div><div class="activity-log">${activity.map(op=>{const synced=state.syncedOperationIds.has(op.id);const own=op.deviceId===deviceId;return `<div class="activity-row"><div class="activity-mark ${synced?'synced':'pending'}"></div><div class="row-main"><div class="row-title">${escapeHTML(op.label)}</div><div class="row-sub">${dateTimeLabel(op.createdAt)} · ${own?'este equipo':'otro equipo'} · ${op.changes?.length||0} cambio${op.changes?.length===1?'':'s'}</div></div><span class="activity-status ${synced?'synced':'pending'}">${synced?'En Drive':'Local'}</span></div>`}).join('')||'<div class="empty">Todavía no hay cambios registrados en esta versión.</div>'}</div></section>
   </div>`;
 }
 
@@ -533,7 +573,7 @@ function renderPaymentModal(modal) {
       <div class="field full"><label>Medio de pago</label><input type="hidden" name="method" value="${escapeHTML(d.method)}"><div class="segment">${[['cash','Efectivo'],['transfer','Transferencia'],['other','Otro']].map(([v,l])=>`<button type="button" class="${d.method===v?'active':''}" data-payment-method="${v}">${l}</button>`).join('')}</div></div>
       <div class="field full"><label>Nota <span class="muted-inline">(opcional)</span></label><input name="note" value="${escapeHTML(d.note||'')}" placeholder="Detalle del pago"></div>
     </div>${member?`<div class="payment-preview"><div><span>${months>1?'Total de los meses':'Pendiente del mes'}</span><strong>${money(due.total)}</strong></div><div><span>${advance>0?'Adelanto a meses siguientes':'Después de este pago'}</span><strong class="${after===0?'good-text':'warn-text'}">${advance>0?money(advance):after===0?'Queda pago':`Queda ${money(after)}`}</strong></div></div>`:''}</div>
-    <div class="modal-foot">${editing?`<button type="button" class="btn danger" data-action="delete-payment" data-id="${editing.id}">Eliminar</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button type="button" class="btn primary" data-action="save-payment" ${!member||entered<=0?'disabled':''}>Guardar pago</button></div></form>
+    <div class="modal-foot">${editing?`<button type="button" class="btn danger" data-action="delete-payment" data-id="${editing.id}">${editing.batchId?'Eliminar pago completo':'Eliminar pago'}</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button type="button" class="btn primary" data-action="save-payment" ${!member||entered<=0?'disabled':''}>Guardar pago</button></div></form>
   </div></div>`;
 }
 
@@ -560,7 +600,7 @@ function renderMemberDetail(modal) {
     <div class="detail-hero"><div class="avatar">${initials(memberName(m))}</div><div class="row-main"><div class="detail-title">${escapeHTML(memberName(m))}</div><div class="row-sub"><span class="badge ${badge.cls}">${badge.text}</span>${m.phone?` · ${escapeHTML(m.phone)}`:''}</div></div><div class="detail-actions"><button class="btn" data-action="edit-member" data-id="${m.id}">Editar</button>${m.status==='active'?`<button class="btn primary" data-action="pay-member" data-id="${m.id}">Cobrar</button>`:''}</div></div>
     <div class="mini-months">${periods.map(p=>{const s=memberPeriodStatus(state.data,m,p);return `<button class="mini-month ${s.isPaid?'paid':p>currentPeriod()?'future':'due'}" ${!s.isPaid?`data-action="pay-member-period" data-id="${m.id}" data-period="${p}"`:''}><span>${shortPeriodLabel(p)}</span><strong>${s.isPaid?'✓ Pago':s.notStarted?'—':s.paid>0?`Falta ${money(s.remaining)}`:`${money(s.remaining)}`}</strong></button>`}).join('')}</div>
     <div class="detail-grid"><div class="detail-stat"><span>Cuota actual</span><strong>${money(memberFee(state.data,m,currentPeriod()))}</strong></div><div class="detail-stat"><span>Ingreso</span><strong>${m.joinedAt?dateLabel(m.joinedAt):'Sin dato'}</strong></div><div class="detail-stat"><span>Nacimiento</span><strong>${m.birthDate?dateLabel(m.birthDate):'Sin dato'}</strong></div><div class="detail-stat"><span>Mutualista</span><strong>${escapeHTML(m.medicalProvider||'Sin dato')}</strong></div></div>
-    ${m.notes?`<div class="note-box">${escapeHTML(m.notes)}</div>`:''}<div class="panel-head"><div><div class="panel-title">Últimos pagos agregados</div></div></div><div class="list">${history.map(p=>`<div class="row-card"><div class="row-main"><div class="row-title">${shortPeriodLabel(p.period)}</div><div class="row-sub">Cobro ${dateLabel(p.paidAt)} · agregado ${dateTimeLabel(p.createdAt)}</div></div><div class="amount">${money(p.amount)}</div><button class="btn small ghost" data-action="edit-payment" data-id="${p.id}">Editar</button></div>`).join('')||'<div class="empty">Todavía no tiene pagos.</div>'}</div>
+    ${m.notes?`<div class="note-box">${escapeHTML(m.notes)}</div>`:''}<div class="panel-head"><div><div class="panel-title">Últimos pagos agregados</div></div></div><div class="list">${history.map(p=>`<div class="row-card"><div class="row-main"><div class="row-title">${shortPeriodLabel(p.period)}</div><div class="row-sub">Cobro ${dateLabel(p.paidAt)} · agregado ${dateTimeLabel(p.createdAt)}</div></div><div class="amount">${money(p.amount)}</div><div class="row-actions"><button class="btn small ghost" data-action="edit-payment" data-id="${p.id}">Editar</button><button class="btn small danger ghost-danger" data-action="delete-payment" data-id="${p.id}">Eliminar</button></div></div>`).join('')||'<div class="empty">Todavía no tiene pagos.</div>'}</div>
   </div></div></div>`;
 }
 
@@ -657,7 +697,7 @@ app.addEventListener('click', async event => {
   if(action==='member-detail'){state.memberListScrollY=window.scrollY;state.modal={type:'member-detail',id};render();return;}
   if(action==='edit-member'){openMember(getMember(id));return;}
   if(action==='edit-payment'){const p=livePayments(state.data).find(x=>x.id===id);if(p)openPayment('',p);return;}
-  if(action==='delete-payment'){const p=state.data.payments.find(x=>x.id===id);if(p&&confirm('¿Eliminar este pago?')){p.deletedAt=nowISO();p.updatedAt=nowISO();state.modal=null;persist('Pago eliminado.');}return;}
+  if(action==='delete-payment'){const p=state.data.payments.find(x=>x.id===id);if(p){const batch=p.batchId?livePayments(state.data).filter(x=>x.batchId===p.batchId):[p];const text=batch.length>1?`¿Eliminar el pago completo? Se quitarán ${batch.length} movimientos distribuidos entre meses.`:'¿Eliminar este pago?';if(confirm(text)){const timestamp=nowISO();batch.forEach(row=>{row.deletedAt=timestamp;row.updatedAt=timestamp;});state.modal=null;persist(batch.length>1?'Pago completo eliminado.':'Pago eliminado.');}}return;}
   if(action==='new-sale'){openSale();return;}
   if(action==='sell-product'){openSale(id);return;}
   if(action==='edit-sale'){const s=liveSales(state.data).find(x=>x.id===id);if(s)openSale('',s);return;}
@@ -713,7 +753,7 @@ app.addEventListener('change', async event => {
   }
   if(event.target.id==='payment-period'){state.paymentPeriod=event.target.value;render();return;}
   if(event.target.id==='payment-method-filter'){state.paymentMethod=event.target.value;render();return;}
-  if(event.target.id==='backup-file'&&event.target.files?.[0]){if(!confirm('¿Importar estos datos en la cuenta actual?')){event.target.value='';return;}try{state.data=await importBackup(event.target.files[0],state.account?.email);render();toast('Datos importados.');scheduleSync();}catch(e){toast(e.message||'No se pudo importar.','error');}return;}
+  if(event.target.id==='backup-file'&&event.target.files?.[0]){if(!confirm('¿Importar estos datos en la cuenta actual?')){event.target.value='';return;}try{state.data=await importBackup(event.target.files[0],state.account?.email,{save:false});persist('Respaldo importado.');}catch(e){toast(e.message||'No se pudo importar.','error');}return;}
 });
 
 app.addEventListener('submit', event => {

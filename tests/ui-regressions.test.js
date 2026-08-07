@@ -41,3 +41,20 @@ test('cantina permite e identifica ventas sin socio', () => {
   assert.match(source, /Venta sin socio/);
   assert.match(source, /\$\{!product\|\|total<=0\?'disabled':''\}/);
 });
+
+test('el guardado crea un log local antes de sincronizar', () => {
+  assert.match(source, /createOperation\(before, state\.data/);
+  assert.match(source, /Guardado en este dispositivo/);
+  assert.match(source, /Registro de cambios/);
+});
+
+test('una sincronización no reemplaza cambios hechos mientras estaba en curso', () => {
+  assert.match(source, /const syncStartData = structuredClone\(state\.data\)/);
+  assert.match(source, /mergeData\(state\.data, result\.data\)/);
+  assert.match(source, /pendingOperationCount\(\) > 0/);
+});
+
+test('borrar un pago distribuido elimina todo el lote', () => {
+  assert.match(source, /livePayments\(state\.data\)\.filter\(x=>x\.batchId===p\.batchId\)/);
+  assert.match(source, /Eliminar pago completo/);
+});
