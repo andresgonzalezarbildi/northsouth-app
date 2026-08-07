@@ -1,0 +1,16 @@
+{
+  "name": "North South Academy",
+  "short_name": "North South",
+  "description": "Gestión de socios, cuotas y cantina de North South Academy",
+  "id": "north-south-academy",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#111111",
+  "theme_color": "#171717",
+  "categories": ["business", "productivity"],
+  "icons": [
+    { "src": "./assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
