@@ -1,19 +1,163 @@
 <!doctype html>
 <html lang="es">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
-    <meta name="theme-color" content="#171717" />
-    <meta name="description" content="Gestión de socios y cuotas de North South Academy" />
-    <link rel="icon" href="./assets/favicon.ico" />
-    <link rel="apple-touch-icon" href="./assets/icon-192.png" />
-    <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="/src/styles.css" />
-    <title>North South Academy</title>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script src="./runtime-config.js"></script>
-    <script type="module" src="/src/main.js"></script>
-  </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#070313">
+  <meta name="description" content="Cronograma unificado del segundo semestre 2026.">
+  <title>Cronograma · 2º semestre 2026</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,430;9..144,560;9..144,680&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/png" href="./favicon.png">
+  <link rel="stylesheet" href="./style.css">
+  <script src="./google-drive-config.js" defer></script>
+  <script src="https://accounts.google.com/gsi/client" defer></script>
+  <script src="./data.js" defer></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="backdrop" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="back-link" href="/"><span aria-hidden="true">←</span> Portal personal</a>
+    <div class="topbar__actions">
+      <div class="drive-sync" id="driveSync">
+        <div class="drive-sync__summary">
+          <span class="drive-sync__status" id="driveStatus" data-state="local">Solo en este navegador</span>
+          <span class="drive-sync__account" id="driveAccount" hidden></span>
+        </div>
+        <button class="drive-menu-button" id="driveMenuButton" type="button" aria-expanded="false" aria-controls="driveMenu" aria-label="Opciones de Google Drive" title="Opciones de Google Drive">
+          <span></span><span></span><span></span>
+        </button>
+        <div class="drive-menu" id="driveMenu" hidden>
+          <button class="drive-button" id="driveButton" type="button">Conectar Drive</button>
+          <button class="drive-disconnect" id="driveDisconnectButton" type="button" hidden>Desconectar</button>
+        </div>
+      </div>
+      <button class="add-button" id="addButton" type="button"><span aria-hidden="true">＋</span> Agregar elemento</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p>Segundo semestre · 2026</p>
+        <h1>Cronograma del semestre</h1>
+      </div>
+    </header>
+
+    <section class="subject-overview" id="subjectOverview" aria-label="Resumen por materia"></section>
+
+    <section class="summary" aria-label="Resumen del cronograma">
+      <article><strong id="completedCount">0/0</strong><span>elementos completados</span></article>
+      <article><strong id="pendingCount">0</strong><span>elementos pendientes</span></article>
+      <article><strong id="weekCount">0</strong><span>elementos en la semana actual</span></article>
+      <article><strong id="nextDeadline">—</strong><span>próxima fecha importante</span></article>
+      <div class="summary__progress"><span id="progressBar"></span></div>
+    </section>
+
+    <section class="controls-panel">
+      <nav class="filters" id="filters" aria-label="Filtros del cronograma">
+        <button type="button" data-filter="all" class="active">Todas juntas</button>
+        <button type="button" data-filter="current-week">Semana actual</button>
+        <button type="button" data-filter="deliverables" class="featured-filter">Entregas, prácticos y laboratorios</button>
+        <span class="filter-separator" aria-hidden="true"></span>
+        <button type="button" data-filter="fuaa">FuAA</button>
+        <button type="button" data-filter="redes">Redes</button>
+        <button type="button" data-filter="fbd">FBD</button>
+        <button type="button" data-filter="pln">IntroPLN</button>
+      </nav>
+
+      <label class="search-field">
+        <span aria-hidden="true">⌕</span>
+        <input id="searchInput" type="search" placeholder="Buscar clase, capítulo, práctico o entrega">
+      </label>
+    </section>
+
+    <section id="timelineView">
+      <div class="timeline" id="timeline"></div>
+      <section class="undated" id="undatedSection">
+        <header>
+          <div><p>Sin fechas publicadas</p><h2>Material todavía no ubicado en semanas</h2></div>
+          <span id="undatedCount"></span>
+        </header>
+        <div id="undatedList"></div>
+      </section>
+    </section>
+
+    <section class="empty-state" id="emptyState" hidden>No hay elementos para este filtro.</section>
+  </main>
+
+  <dialog id="taskDialog" class="dialog">
+    <form id="taskForm" method="dialog">
+      <input id="taskId" type="hidden">
+      <span class="dialog-mark" aria-hidden="true">＋</span>
+      <h2 id="taskDialogTitle">Agregar elemento</h2>
+      <p>La semana puede quedar vacía si el curso todavía no publicó su cronograma.</p>
+
+      <div class="form-grid">
+        <label class="form-field form-field--wide">
+          <span>Título</span>
+          <input id="taskTitle" type="text" maxlength="140" required>
+        </label>
+        <label class="form-field">
+          <span>Materia</span>
+          <select id="taskSubject" required>
+            <option value="fuaa">FuAA</option>
+            <option value="redes">Redes</option>
+            <option value="fbd">FBD</option>
+            <option value="pln">IntroPLN</option>
+          </select>
+        </label>
+        <label class="form-field">
+          <span>Tipo</span>
+          <select id="taskType" required>
+            <option value="openfing">Clase OpenFing</option>
+            <option value="reading">Lectura</option>
+            <option value="practical">Práctico</option>
+            <option value="course-class">Actividad del curso</option>
+            <option value="discussion">Discusión</option>
+            <option value="control">Control</option>
+            <option value="questionnaire">Cuestionario</option>
+            <option value="workshop">Taller</option>
+            <option value="partial">Parcial</option>
+            <option value="assignment-published">Publicación de obligatorio</option>
+            <option value="deadline">Entrega</option>
+            <option value="monitoring">Monitoreo</option>
+            <option value="defense">Defensa</option>
+            <option value="consultation">Consulta</option>
+          </select>
+        </label>
+        <label class="form-field">
+          <span>Semana de referencia</span>
+          <input id="taskWeek" type="date">
+        </label>
+        <label class="form-field">
+          <span>Fecha exacta, solo si corresponde</span>
+          <input id="taskEventDate" type="date">
+        </label>
+        <label class="form-field form-field--wide">
+          <span>Detalle</span>
+          <textarea id="taskDetails" rows="4" maxlength="500" placeholder="Temas, capítulos, condiciones de entrega..."></textarea>
+        </label>
+      </div>
+
+      <div class="dialog-actions dialog-actions--spread">
+        <button id="deleteButton" class="danger-button" type="button" hidden>Eliminar</button>
+        <span></span>
+        <button class="text-button" value="cancel" type="button" id="cancelDialogButton">Cancelar</button>
+        <button class="update-button" type="submit">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+
+  <nav class="quick-nav" aria-label="Accesos rápidos">
+    <button id="topButton" type="button" aria-label="Volver arriba">↑ Arriba</button>
+    <button id="completedJumpButton" type="button">✓ Completadas</button>
+  </nav>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
 </html>

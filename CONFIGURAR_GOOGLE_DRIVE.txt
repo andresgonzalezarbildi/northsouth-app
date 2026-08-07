@@ -1,0 +1,58 @@
+GOOGLE DRIVE · SESIÓN PERSISTENTE
+
+Esta versión usa Google Identity Services con Authorization Code Flow y Netlify Functions.
+No usa una base de datos. El progreso sigue guardándose en appDataFolder de Google Drive.
+La diferencia es que el refresh token queda guardado en una cookie HttpOnly cifrada, de modo
+que el usuario no tiene que volver a autorizar Drive cada vez que vence el access token.
+
+1. GOOGLE CLOUD
+- Seguí usando el mismo proyecto y el mismo OAuth Client ID de tipo "Aplicación web".
+- Google Drive API debe estar habilitada.
+- En "Orígenes autorizados de JavaScript" debe estar:
+    https://andresgonzalez.netlify.app
+  y cualquier otro origen real desde el que publiques la app.
+- Para el modo popup no hace falta agregar una ruta de callback: Google usa el origen de la página.
+
+2. FRONTEND
+Ya no hace falta pegar el Client ID en google-drive-config.js.
+El navegador lo obtiene automáticamente desde una Netlify Function.
+
+3. NETLIFY · VARIABLES DE ENTORNO
+En Site configuration > Environment variables agregá:
+
+GOOGLE_CLIENT_ID
+  Tu Client ID OAuth 2.0 de Google.
+
+GOOGLE_CLIENT_SECRET
+  El Client Secret del mismo cliente OAuth. ESTE VALOR SOLO VA EN NETLIFY; nunca en JS/HTML.
+
+SESSION_SECRET
+  Una cadena aleatoria larga para cifrar la cookie de sesión. Por ejemplo, generá una de
+  32 bytes o más. No hace falta registrarla en Google.
+
+Después hacé un nuevo deploy.
+
+4. DEPLOY
+Las Netlify Functions necesitan ser procesadas por Netlify. Si el sitio está conectado a Git,
+subí esta carpeta/repositorio normalmente. También podés usar Netlify CLI.
+No alcanza con abrir index.html por file://.
+
+5. PRIMER INGRESO
+- Pulsá Conectar Drive una vez en cada PC.
+- Después de eso, la sesión se restaura sola al volver a abrir el sitio.
+- Los access tokens vencidos se renuevan desde Netlify usando el refresh token.
+- Solo "Desconectar" elimina la sesión persistente de esa PC. No cierra las otras PCs.
+
+SINCRONIZACIÓN ENTRE PCS
+- Los cambios locales se envían luego de una pausa breve.
+- Mientras la página está abierta, consulta Drive cada 12 segundos para traer cambios hechos en otra PC.
+- El servidor usa una escritura condicional con ETag: si otra PC cambió el archivo entre la lectura y
+  la escritura, vuelve a leer, mezcla y reintenta en lugar de pisar el cambio.
+- Los ítems modificados localmente se envían como cambios pendientes y el servidor les asigna la hora
+  del servidor, por lo que la sincronización no depende de que los relojes de ambas PCs coincidan.
+
+LÍMITE REAL DE GOOGLE
+La sesión está diseñada para mantenerse entre recargas y reinicios hasta que uses Desconectar.
+Google igualmente puede invalidar un refresh token por motivos externos (por ejemplo, revocación
+manual del permiso, cambios de seguridad de la cuenta o políticas de Google). En ese caso hay que
+autorizar nuevamente una vez.
