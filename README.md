@@ -5,10 +5,10 @@ Gestión de socios, cuotas, pagos y cantina. El mismo frontend sirve para web/PW
 ## Qué cambió en v6
 
 - La app ahora exige inicio de sesión con Google antes de mostrar datos.
-- Solo entran los correos definidos en `VITE_ALLOWED_EMAILS`.
+- Cualquier cuenta de Google puede iniciar sesión cuando OAuth está publicado.
 - Cada cuenta tiene su propio almacenamiento local.
 - Una cuenta nueva empieza vacía: los datos de la planilla ya no vienen precargados.
-- `IMPORTAR-DATOS-ACTUALES.json` contiene la importación inicial de la planilla y se carga manualmente desde Ajustes.
+- Los datos reales no forman parte del código ni del deploy; se importan manualmente desde un respaldo privado en la cuenta correspondiente.
 - Socios, pagos, productos y ventas se guardan primero en `localStorage`; Drive no es necesario para trabajar.
 - Después del primer inicio de sesión, la sesión queda recordada y la app puede abrir offline en ese dispositivo.
 - Drive se usa únicamente como sincronización cuando hay conexión.
@@ -42,7 +42,6 @@ También se puede usar `ABRIR-APP-LOCAL.bat`; ahora hace exactamente lo mismo: i
 
 ```env
 VITE_GOOGLE_WEB_CLIENT_ID=TU_CLIENT_ID_WEB.apps.googleusercontent.com
-VITE_ALLOWED_EMAILS=correo1@gmail.com,correo2@gmail.com
 ```
 
 `VITE_GOOGLE_WEB_CLIENT_ID` es un identificador público de OAuth, no una contraseña. No debe ponerse un client secret en esta app.
@@ -53,7 +52,7 @@ La app ya no trae socios ni pagos por defecto.
 
 1. Iniciar sesión con la cuenta del profesor.
 2. Ir a **Ajustes → Datos y respaldo → Importar respaldo**.
-3. Elegir `IMPORTAR-DATOS-ACTUALES.json`.
+3. Elegir el respaldo JSON privado correspondiente a esa cuenta.
 
 A partir de ahí esos datos pertenecen al almacenamiento de esa cuenta y luego pueden sincronizarse con su Drive.
 
@@ -92,7 +91,7 @@ http://localhost:5173
 
 6. Agregar también el dominio HTTPS definitivo de la web cuando se publique.
 7. Copiar ese Web Client ID a `VITE_GOOGLE_WEB_CLIENT_ID`.
-8. Escribir en `VITE_ALLOWED_EMAILS` los correos que querés habilitar.
+8. Para producción, cambiar el estado de publicación OAuth de **Testing** a **In production**.
 
 Al pulsar **Ingresar con Google**, la app solicita identidad y acceso únicamente a `drive.appdata`. No hay una clave OAuth que el usuario deba escribir.
 
@@ -100,7 +99,11 @@ La sincronización guarda `north-south-data.json` en `appDataFolder` de Google D
 
 ### Importante sobre varias cuentas
 
-`appDataFolder` pertenece a cada cuenta de Google. Si habilitás dos correos, ambos pueden usar la aplicación, pero cada uno tendrá su propio conjunto de datos de Drive. Para el uso previsto de un único profesor esto es lo adecuado. Si más adelante querés dos usuarios distintos trabajando sobre exactamente la misma base, habría que cambiar el esquema de sincronización.
+`appDataFolder` pertenece a cada cuenta de Google. Cualquier usuario que inicie sesión tendrá su propio conjunto de datos de Drive y una cuenta nueva empieza vacía. Los archivos de `appDataFolder` no se comparten entre cuentas.
+
+El almacenamiento local también usa una clave distinta por correo. Además, antes de restaurar una sesión de Drive la app comprueba que el token de Google pertenezca al mismo correo de la sesión local, evitando sincronizar accidentalmente datos de dos cuentas distintas.
+
+Si en el futuro querés varios usuarios trabajando sobre exactamente la misma base, este esquema no sirve: habría que implementar un backend o un almacenamiento compartido con permisos.
 
 ## Instalar en la PC
 
@@ -147,4 +150,4 @@ El Web Client ID sigue configurado en `.env`; no se escribe desde la app.
 npm test
 ```
 
-Actualmente: **18/18 tests pasando**.
+Actualmente: **24/24 tests pasando**.

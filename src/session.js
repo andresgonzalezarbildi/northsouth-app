@@ -1,5 +1,3 @@
-import { isAllowedEmail } from './app-config.js';
-
 export const AUTH_SESSION_KEY = 'northsouth:auth-session:v1';
 
 export function normalizeEmail(email) {
@@ -12,7 +10,7 @@ export function loadAuthSession() {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     const email = normalizeEmail(parsed?.email);
-    if (!email || !isAllowedEmail(email)) {
+    if (!email) {
       localStorage.removeItem(AUTH_SESSION_KEY);
       return null;
     }
@@ -24,7 +22,7 @@ export function loadAuthSession() {
 
 export function saveAuthSession(profile) {
   const email = normalizeEmail(profile?.email);
-  if (!isAllowedEmail(email)) throw new Error('Esta cuenta no está habilitada para ingresar.');
+  if (!email) throw new Error('Google no devolvió un correo válido.');
   const session = { email, name: String(profile?.name || ''), verifiedAt: new Date().toISOString() };
   localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
   return session;

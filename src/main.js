@@ -2,9 +2,9 @@ import {
   dataKeyFor, loadData, saveData, verifyLocalStorage, hasLegacyLocalData, exportLegacyLocalData,
   exportBackup, importBackup
 } from './storage.js';
-import { connectGoogle, disconnectGoogle, restoreGoogleToken } from './google-auth.js';
+import { connectGoogle, disconnectGoogle, getGoogleProfile, restoreGoogleToken } from './google-auth.js';
 import { syncWithDrive } from './drive-sync.js';
-import { GOOGLE_WEB_CLIENT_ID, ALLOWED_EMAILS, isAllowedEmail } from './app-config.js';
+import { GOOGLE_WEB_CLIENT_ID } from './app-config.js';
 import { loadAuthSession, saveAuthSession, clearAuthSession, normalizeEmail } from './session.js';
 import {
   activeMembers, activeProducts, cantinaSummary, findMembers, firstUnpaidPeriod, live, livePayments, liveSales,
@@ -132,10 +132,6 @@ async function ensureDriveLogin({ selectAccount = true } = {}) {
     await disconnectGoogle();
     throw new Error('No se pudo leer el correo de la cuenta de Google.');
   }
-  if (!isAllowedEmail(email)) {
-    await disconnectGoogle();
-    throw new Error('Esta cuenta no está habilitada para ingresar.');
-  }
   return { ...login, email };
 }
 
@@ -203,7 +199,18 @@ async function syncNow(interactive = false) {
     state.syncing = true;
     state.sync = { ...state.sync, kind:'busy', text:'Sincronizando…' };
     render();
-    let token = state.token || await restoreGoogleToken(cid);
+    let token = state.token;
+    if (!token) {
+      token = await restoreGoogleToken(cid);
+      if (token) {
+        const profile = await getGoogleProfile(token);
+        const tokenEmail = normalizeEmail(profile?.email);
+        if (!tokenEmail || tokenEmail !== state.account.email) {
+          await disconnectGoogle();
+          throw new Error(`La cuenta de Drive no coincide con ${state.account.email}. Volvé a iniciar sesión.`);
+        }
+      }
+    }
     if (!token && interactive) {
       const login = await ensureDriveLogin({ selectAccount:false });
       if (login.email !== state.account.email) {
@@ -235,20 +242,18 @@ async function syncNow(interactive = false) {
 
 function renderLogin() {
   const configured = Boolean(clientId());
-  const whitelistReady = ALLOWED_EMAILS.length > 0;
   return `<main class="login-screen">
     <section class="login-card">
       <div class="login-logo-wrap"><img src="./assets/north-south-logo.jpg" alt="North South Academy"></div>
       <div class="login-kicker">NORTH SOUTH</div>
       <h1>Academy</h1>
-      <p>Ingresá con una cuenta habilitada para acceder a la gestión de la academia.</p>
+      <p>Ingresá con Google. Cada cuenta mantiene sus propios datos, separados del resto.</p>
       ${state.authError ? `<div class="login-error">${escapeHTML(state.authError)}</div>` : ''}
-      <button class="btn primary login-google" data-action="login-google" ${state.authBusy || !configured || !whitelistReady ? 'disabled' : ''}>
+      <button class="btn primary login-google" data-action="login-google" ${state.authBusy || !configured ? 'disabled' : ''}>
         <span class="google-g">G</span>${state.authBusy ? 'Ingresando…' : 'Ingresar con Google'}
       </button>
       ${!configured ? '<small>Falta VITE_GOOGLE_WEB_CLIENT_ID en .env.</small>' : ''}
-      ${configured && !whitelistReady ? '<small>Falta VITE_ALLOWED_EMAILS en .env.</small>' : ''}
-      <div class="login-foot">Los datos quedan guardados localmente en cada dispositivo y Drive sincroniza cuando hay conexión.</div>
+      <div class="login-foot">Los datos se guardan por cuenta en este dispositivo y se sincronizan únicamente con el espacio privado de esa cuenta en Drive.</div>
     </section>
   </main>`;
 }

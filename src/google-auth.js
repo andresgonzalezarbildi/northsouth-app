@@ -59,7 +59,7 @@ function restoreWebToken() {
   return null;
 }
 
-async function webProfile(token) {
+export async function getGoogleProfile(token) {
   try {
     const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` } });
     return r.ok ? await r.json() : null;
@@ -93,7 +93,7 @@ export async function connectGoogle(webClientId, { selectAccount = true } = {}) 
     });
     if (!tokenResult?.access_token) throw new Error('Google no devolvió un token con acceso a Drive.');
     saveWebToken(tokenResult.access_token, tokenResult.expires_in);
-    const profile = await webProfile(tokenResult.access_token);
+    const profile = await getGoogleProfile(tokenResult.access_token);
     return { token: tokenResult.access_token, profile: profile ? { email: profile.email, name: profile.name } : null };
   }
 

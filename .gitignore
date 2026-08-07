@@ -3,3 +3,9 @@ dist/
 android/
 ios/
 .DS_Store
+
+# Datos privados / respaldos exportados
+src/seed-data.js
+migration/legacy-seed.js
+IMPORTAR-DATOS-ACTUALES.json
+north-south-*.json
