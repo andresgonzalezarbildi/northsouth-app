@@ -157,22 +157,38 @@ export function validatePayment(data, draft, editingId = null) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.paidAt || '')) errors.push('Elegí la fecha de cobro.');
   const amount = Number(draft.amount);
   if (!(amount > 0)) errors.push('El monto debe ser mayor a 0.');
-  if (member && draft.period) {
-    const already = livePayments(data)
-      .filter(p => p.id !== editingId && p.memberId === member.id && p.period === draft.period)
-      .reduce((s, p) => s + Number(p.amount || 0), 0);
-    const remaining = Math.max(0, memberFee(data, member, draft.period) - already);
-    if (remaining === 0) errors.push('Ese mes ya está pago.');
-    else if (amount > remaining) errors.push(`El monto supera lo pendiente para ese mes (${remaining}).`);
-  }
   return errors;
+}
+
+export function allocatePaymentAmount(data, member, startPeriod, amount, { editingId = null, maxMonths = 120 } = {}) {
+  let pendingAmount = Number(amount || 0);
+  const rows = [];
+  if (!member || !/^\d{4}-\d{2}$/.test(startPeriod || '') || !(pendingAmount > 0)) {
+    return { rows, remainder: Math.max(0, pendingAmount || 0) };
+  }
+
+  for (let i = 0; i < maxMonths && pendingAmount > 0; i++) {
+    const period = addMonths(startPeriod, i);
+    const fee = memberFee(data, member, period);
+    if (!(fee > 0)) continue;
+    const paid = livePayments(data)
+      .filter(p => p.id !== editingId && p.memberId === member.id && p.period === period)
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const remaining = Math.max(0, fee - paid);
+    if (!(remaining > 0)) continue;
+    const applied = Math.min(pendingAmount, remaining);
+    rows.push({ period, amount: applied, fee, paid, remainingBefore: remaining });
+    pendingAmount -= applied;
+  }
+
+  return { rows, remainder: pendingAmount };
 }
 
 export function validateSale(data, draft, editingId = null) {
   const errors = [];
-  const member = live(data.members).find(m => m.id === draft.memberId);
+  const member = draft.memberId ? live(data.members).find(m => m.id === draft.memberId) : null;
   const product = live(data.products).find(p => p.id === draft.productId);
-  if (!member) errors.push('Elegí un socio.');
+  if (draft.memberId && !member) errors.push('El socio seleccionado ya no está disponible.');
   if (!product) errors.push('Elegí un producto.');
   if (!(Number(draft.quantity) > 0)) errors.push('La cantidad debe ser mayor a 0.');
   if (!(Number(draft.unitPrice) > 0)) errors.push('Ingresá el precio.');

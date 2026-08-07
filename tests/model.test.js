@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  memberFee, memberPeriodStatus, periodSummary, validatePayment, recentMovements, findMembers
+  allocatePaymentAmount, memberFee, memberPeriodStatus, periodSummary, validatePayment, validateSale, recentMovements, findMembers
 } from '../src/model.js';
 
 const base = () => ({
@@ -48,9 +48,24 @@ test('resumen usa solo socios activos para el esperado', () => {
   assert.equal(s.pendingCount,1);
 });
 
-test('evita duplicar un mes ya completamente pago', () => {
-  const errors=validatePayment(base(),{memberId:'m1',period:'2026-08',paidAt:'2026-08-07',amount:10,method:'cash'});
-  assert.ok(errors.some(x=>x.includes('ya está pago')));
+test('un pago puede adelantarse aunque el mes inicial ya esté pago', () => {
+  const d=base(),member=d.members[0];
+  const errors=validatePayment(d,{memberId:'m1',period:'2026-08',paidAt:'2026-08-07',amount:3500,method:'cash'});
+  assert.equal(errors.length,0);
+  const allocation=allocatePaymentAmount(d,member,'2026-08',3500);
+  assert.deepEqual(allocation.rows.map(x=>[x.period,x.amount]), [['2026-09',3000],['2026-10',500]]);
+  assert.equal(allocation.remainder,0);
+});
+
+test('un pago mayor al saldo del mes se reparte entre meses siguientes', () => {
+  const d=base(),member=d.members[1];
+  const allocation=allocatePaymentAmount(d,member,'2026-03',4500);
+  assert.deepEqual(allocation.rows.map(x=>[x.period,x.amount]), [['2026-03',2000],['2026-04',2000],['2026-05',500]]);
+});
+
+test('cantina permite una venta sin socio', () => {
+  const errors=validateSale(base(),{memberId:'',productId:'prod1',quantity:1,unitPrice:100,soldAt:'2026-08-07'});
+  assert.equal(errors.length,0);
 });
 
 test('últimos movimientos se ordenan por momento de agregado y no por fecha del cobro', () => {

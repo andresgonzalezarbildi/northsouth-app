@@ -28,3 +28,10 @@ test('los archivos con datos precargados no forman parte del proyecto', async ()
   assert.equal(await doesNotExist(new URL('../src/seed-data.js', import.meta.url)), true);
   assert.equal(await doesNotExist(new URL('../migration/legacy-seed.js', import.meta.url)), true);
 });
+
+test('la PWA prioriza el deploy actual y usa la caché solo como respaldo', async () => {
+  const sw = await readFile(new URL('../public/sw.js', import.meta.url), 'utf8');
+  assert.match(sw, /fetch\(event\.request, \{ cache: 'no-store' \}\)/);
+  assert.match(sw, /caches\.match\(event\.request\)/);
+  assert.match(sw, /north-south-v6-1/);
+});

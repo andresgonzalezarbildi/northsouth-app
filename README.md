@@ -1,8 +1,18 @@
-# North South Academy — v6
+# North South Academy — v6.1
 
 Gestión de socios, cuotas, pagos y cantina. El mismo frontend sirve para web/PWA de escritorio y para Android mediante Capacitor.
 
-## Qué cambió en v6
+## Qué cambió en v6.1
+
+- La sincronización de Drive tolera reintentos de red y copias remotas vacías/incompletas.
+- La primera copia de datos en `appDataFolder` se crea de forma atómica con contenido, evitando archivos vacíos si una solicitud se corta.
+- La PWA usa network-first para no dejar una PC ejecutando un `app.js` viejo después de un deploy.
+- Los pagos que superan el saldo del mes se distribuyen automáticamente a los meses siguientes.
+- El campo de monto conserva correctamente los ceros mientras se escribe.
+- Cantina permite ventas sin socio y las identifica como `Venta sin socio`.
+- La opción de rescatar datos de una versión anterior solo aparece si la cuenta actual todavía está vacía.
+
+## Base heredada de v6
 
 - La app ahora exige inicio de sesión con Google antes de mostrar datos.
 - Cualquier cuenta de Google puede iniciar sesión cuando OAuth está publicado.
@@ -150,4 +160,4 @@ El Web Client ID sigue configurado en `.env`; no se escribe desde la app.
 npm test
 ```
 
-Actualmente: **24/24 tests pasando**.
+Actualmente: **29/29 tests pasando**.

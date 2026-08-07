@@ -29,3 +29,15 @@ test('la app bloquea la interfaz hasta tener cuenta', () => {
   assert.match(source, /if \(!state\.account \|\| !state\.data\)/);
   assert.match(source, /data-action="login-google"/);
 });
+
+test('el monto del pago conserva el texto mientras se escribe y distribuye excedentes', () => {
+  assert.match(source, /state\.modal\.draft\.amount=event\.target\.value/);
+  assert.match(source, /allocatePaymentAmount\(/);
+  assert.match(source, /excedente aplicado a los meses siguientes/);
+});
+
+test('cantina permite e identifica ventas sin socio', () => {
+  assert.match(source, /Dejá vacío para venta sin socio/);
+  assert.match(source, /Venta sin socio/);
+  assert.match(source, /\$\{!product\|\|total<=0\?'disabled':''\}/);
+});

@@ -103,7 +103,7 @@ export function normalizeData(input) {
       updatedAt: p.updatedAt || p.createdAt || timestamp, deletedAt: p.deletedAt || null
     })),
     sales: (Array.isArray(data.sales) ? data.sales : []).filter(x => x?.id).map(s => ({
-      ...s, quantity: Math.max(1, numberOr(s.quantity, 1)), unitPrice: Math.max(0, numberOr(s.unitPrice)),
+      ...s, memberId: String(s.memberId || ''), quantity: Math.max(1, numberOr(s.quantity, 1)), unitPrice: Math.max(0, numberOr(s.unitPrice)),
       amount: Math.max(0, numberOr(s.amount, numberOr(s.unitPrice) * numberOr(s.quantity, 1))),
       createdAt: s.createdAt || s.soldAt || s.updatedAt || timestamp,
       updatedAt: s.updatedAt || s.createdAt || s.soldAt || timestamp, deletedAt: s.deletedAt || null

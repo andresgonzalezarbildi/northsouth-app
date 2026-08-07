@@ -1,4 +1,4 @@
-const CACHE = 'north-south-v3';
+const CACHE = 'north-south-v6-1';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './assets/north-south-logo.jpg', './assets/icon-192.png', './assets/icon-512.png',
@@ -19,13 +19,19 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
-  event.respondWith(
-    caches.match(event.request).then(cached => {
-      const network = fetch(event.request).then(response => {
-        if (response.ok) caches.open(CACHE).then(cache => cache.put(event.request, response.clone()));
-        return response;
-      }).catch(() => null);
-      return cached || network.then(response => response || caches.match('./index.html'));
-    })
-  );
+
+  // Cuando hay conexión se usa siempre el deploy más nuevo. La caché queda
+  // únicamente como respaldo para poder abrir la PWA sin internet.
+  event.respondWith((async () => {
+    try {
+      const response = await fetch(event.request, { cache: 'no-store' });
+      if (response.ok) {
+        const cache = await caches.open(CACHE);
+        cache.put(event.request, response.clone());
+      }
+      return response;
+    } catch {
+      return (await caches.match(event.request)) || (await caches.match('./index.html'));
+    }
+  })());
 });
