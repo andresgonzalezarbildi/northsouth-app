@@ -15,3 +15,17 @@ test('productos permiten estado activo/inactivo y borrado', () => {
   assert.match(source, /data-action="delete-product"/);
   assert.match(source, /data-product-filter/);
 });
+
+test('los guardados de modales tienen acciones directas', () => {
+  assert.match(source, /data-action="save-member"/);
+  assert.match(source, /data-action="save-payment"/);
+  assert.match(source, /data-action="save-sale"/);
+  assert.match(source, /data-action="save-product"/);
+  assert.match(source, /requestSubmit\(\)/);
+});
+
+test('la app bloquea la interfaz hasta tener cuenta', () => {
+  assert.match(source, /function renderLogin\(\)/);
+  assert.match(source, /if \(!state\.account \|\| !state\.data\)/);
+  assert.match(source, /data-action="login-google"/);
+});

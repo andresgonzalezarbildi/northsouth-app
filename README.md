@@ -1,151 +1,150 @@
-# North South Academy Manager v4
+# North South Academy — v6
 
-Aplicación local-first para socios, cuotas y cantina de North South Academy.
+Gestión de socios, cuotas, pagos y cantina. El mismo frontend sirve para web/PWA de escritorio y para Android mediante Capacitor.
 
-## Qué cambió en esta versión
+## Qué cambió en v6
 
-- Corregido el error que hacía que los botones `Guardar` de los modales cerraran la ventana antes de enviar el formulario. Era la causa de que pagos, socios, productos y ventas parecieran no guardarse en localhost.
-- La app funciona y persiste completamente en local sin Google Auth ni Drive. Drive es solo una capa de sincronización opcional.
-- Al abrir la ficha de un socio desde una lista larga, se conserva la posición de scroll al abrir/cerrar la ficha.
-- Productos de cantina: se pueden dejar activos/inactivos, filtrar por estado y eliminar.
-- Al eliminar un producto se conserva su nombre/emoji en las ventas históricas.
+- La app ahora exige inicio de sesión con Google antes de mostrar datos.
+- Solo entran los correos definidos en `VITE_ALLOWED_EMAILS`.
+- Cada cuenta tiene su propio almacenamiento local.
+- Una cuenta nueva empieza vacía: los datos de la planilla ya no vienen precargados.
+- `IMPORTAR-DATOS-ACTUALES.json` contiene la importación inicial de la planilla y se carga manualmente desde Ajustes.
+- Socios, pagos, productos y ventas se guardan primero en `localStorage`; Drive no es necesario para trabajar.
+- Después del primer inicio de sesión, la sesión queda recordada y la app puede abrir offline en ese dispositivo.
+- Drive se usa únicamente como sincronización cuando hay conexión.
+- El ID OAuth se configura al preparar la app; nunca se pide dentro de la interfaz.
+- En desarrollo se eliminan service workers viejos de localhost para evitar cargar una versión anterior desde caché.
+- Se restauró el logo como marca de agua de fondo.
 
-- Todos los cambios se guardan primero en `localStorage`, aunque no haya internet ni Drive.
-- Socios, pagos, productos y ventas de cantina persisten y entran en la sincronización.
-- La sincronización fusiona registros por `id` + `updatedAt` en vez de reemplazar el archivo completo.
-- El botón Cobrar actualiza el saldo del socio inmediatamente después de guardar.
-- Últimos movimientos se ordena por `createdAt` (momento en que se agregó el movimiento), no por el mes que cubre.
-- Búsqueda aproximada: por ejemplo `andes` puede encontrar `ANDRES`.
-- El selector de socio en cobros y cantina es un buscador con sugerencias mientras se escribe.
-- Nueva vista `Cuotas`, con socios en filas y meses en columnas, incluyendo pagos adelantados.
-- La cuota general usa historial por mes: cambiarla desde septiembre no modifica julio/agosto.
-- Cantina: productos con nombre, emoji, precio habitual y ventas asociadas a socios.
-- El logo vuelve al Panel.
-- Cada cambio de pantalla limpia el buscador de la vista anterior.
-- Dos acciones fijas arriba: `Registrar pago` y `Venta cantina`.
-- PWA instalable en PC para usar exactamente la misma interfaz como aplicación de escritorio.
+## Probar en PC
 
-## Probar sin instalar npm
-
-En Windows podés ejecutar:
-
-`ABRIR-APP-LOCAL.bat`
-
-Levanta un servidor local con Python en `http://localhost:5173` y abre la aplicación. No necesita internet para usar los datos locales.
-
-> Para esta modalidad, si querés probar Drive sin Vite, podés colocar temporalmente el Web Client ID en `src/app-config.js`.
-
-## Desarrollo normal
+1. Instalar Node.js.
+2. En esta carpeta ejecutar:
 
 ```bash
 npm install
+```
+
+3. Copiar `.env.example` como `.env` y completar los valores.
+4. Ejecutar:
+
+```bash
 npm run dev
 ```
 
-Build:
+Luego abrir `http://localhost:5173`.
 
-```bash
-npm run build
-```
+También se puede usar `ABRIR-APP-LOCAL.bat`; ahora hace exactamente lo mismo: instala dependencias si faltan, inicia Vite y abre localhost.
 
-Tests:
+> Si modificás `.env` mientras Vite está abierto, cerrá `npm run dev` y volvelo a iniciar. Vite lee esas variables al arrancar.
 
-```bash
-npm test
-```
-
-## Configuración de Google Drive
-
-La configuración OAuth no se ingresa dentro de la app.
-
-### 1. Web Client ID
-
-Crear un archivo `.env` en la raíz a partir de `.env.example`:
+## Configuración `.env`
 
 ```env
-VITE_GOOGLE_WEB_CLIENT_ID=TU_CLIENT_ID.apps.googleusercontent.com
+VITE_GOOGLE_WEB_CLIENT_ID=TU_CLIENT_ID_WEB.apps.googleusercontent.com
+VITE_ALLOWED_EMAILS=correo1@gmail.com,correo2@gmail.com
 ```
 
-También existe `src/app-config.js` como alternativa de configuración fija para builds locales.
+`VITE_GOOGLE_WEB_CLIENT_ID` es un identificador público de OAuth, no una contraseña. No debe ponerse un client secret en esta app.
 
-### 2. Google Cloud
+## Primera carga de los datos actuales
 
-En el mismo proyecto de Google Cloud:
+La app ya no trae socios ni pagos por defecto.
 
-1. Habilitar Google Drive API.
-2. Configurar OAuth consent screen.
-3. Agregar el scope `https://www.googleapis.com/auth/drive.appdata`.
-4. Crear un OAuth Client ID de tipo Web application.
-5. En Authorized JavaScript origins agregar las URLs usadas por la web, por ejemplo el dominio de producción y `http://localhost:5173` para desarrollo.
-6. Copiar ese Web Client ID al `.env`.
+1. Iniciar sesión con la cuenta del profesor.
+2. Ir a **Ajustes → Datos y respaldo → Importar respaldo**.
+3. Elegir `IMPORTAR-DATOS-ACTUALES.json`.
 
-La aplicación guarda `north-south-data.json` en `appDataFolder`, un espacio privado de Drive no visible como archivo normal para el usuario.
+A partir de ahí esos datos pertenecen al almacenamiento de esa cuenta y luego pueden sincronizarse con su Drive.
 
-### 3. Android
+Si el navegador conserva datos creados con la versión 4, Ajustes muestra **Descargar datos de la versión anterior**. Se descargan y luego se importan en la cuenta correcta.
 
-El package de la app es:
+## Cómo funciona el guardado
 
-`uy.com.northsouth.academy`
+El orden es deliberadamente:
 
-Después de crear Android con Capacitor:
+1. Se modifica la app.
+2. Se guarda y verifica en `localStorage` de la cuenta activa.
+3. La interfaz se actualiza inmediatamente.
+4. Si hay internet y Drive está autorizado, se sincroniza después.
+
+Por lo tanto registrar socios, cuotas, pagos, productos y ventas no depende de Drive ni de internet.
+
+La clave local queda separada por correo, por ejemplo:
+
+```text
+northsouth:data:v4:correo%40gmail.com
+```
+
+## Google Auth + Drive
+
+En Google Cloud Console:
+
+1. Crear el proyecto de North South.
+2. Habilitar **Google Drive API**.
+3. Configurar la pantalla de consentimiento OAuth.
+4. Crear un **OAuth Client ID de tipo Web application**.
+5. En orígenes autorizados agregar para desarrollo:
+
+```text
+http://localhost:5173
+```
+
+6. Agregar también el dominio HTTPS definitivo de la web cuando se publique.
+7. Copiar ese Web Client ID a `VITE_GOOGLE_WEB_CLIENT_ID`.
+8. Escribir en `VITE_ALLOWED_EMAILS` los correos que querés habilitar.
+
+Al pulsar **Ingresar con Google**, la app solicita identidad y acceso únicamente a `drive.appdata`. No hay una clave OAuth que el usuario deba escribir.
+
+La sincronización guarda `north-south-data.json` en `appDataFolder` de Google Drive y fusiona registros por ID/fecha antes de escribir, para no reemplazar indiscriminadamente los cambios locales de otro dispositivo.
+
+### Importante sobre varias cuentas
+
+`appDataFolder` pertenece a cada cuenta de Google. Si habilitás dos correos, ambos pueden usar la aplicación, pero cada uno tendrá su propio conjunto de datos de Drive. Para el uso previsto de un único profesor esto es lo adecuado. Si más adelante querés dos usuarios distintos trabajando sobre exactamente la misma base, habría que cambiar el esquema de sincronización.
+
+## Instalar en la PC
+
+La opción **Instalar aplicación** es la instalación PWA del navegador. Aparece cuando la versión está publicada por HTTPS y Chrome/Edge consideran que la web es instalable.
+
+Al instalarla:
+
+- aparece como aplicación independiente en Windows;
+- abre sin pestañas del navegador;
+- conserva datos localmente;
+- puede seguir funcionando sin internet;
+- sincroniza con Drive al recuperar conexión.
+
+En localhost no es necesario instalarla: se usa `npm run dev` o `ABRIR-APP-LOCAL.bat`.
+
+## Android / Capacitor
+
+El package configurado es:
+
+```text
+uy.com.northsouth.academy
+```
+
+Comandos:
 
 ```bash
+npm install
 npm run build
 npx cap add android
 npx cap sync
 npx cap open android
 ```
 
-En Google Cloud crear además un OAuth Client ID de tipo Android con:
+Para Google en Android hay que crear además un OAuth Client ID de tipo Android con:
 
-- Package: `uy.com.northsouth.academy`
-- SHA-1 de la clave que firma el APK.
+- package: `uy.com.northsouth.academy`
+- SHA-1 de la firma usada para el APK
 
-Para debug:
-
-```bash
-cd android
-gradlew signingReport
-```
-
-Para un APK release firmado se debe registrar el SHA-1 de esa firma. Si más adelante se publica en Play Store, también corresponde registrar el SHA-1 de Play App Signing.
-
-El valor que usa `webClientId` dentro de la aplicación sigue siendo el Client ID **Web**, no el Client ID Android.
-
-## Uso en PC como app de escritorio
-
-La versión recomendada es la PWA:
-
-1. Publicar el build web en HTTPS.
-2. Abrirlo una vez en Chrome o Edge.
-3. Elegir `Instalar aplicación` o usar el botón `Instalar en esta PC` si el navegador ofrece el evento de instalación.
-
-Después queda como aplicación separada, con icono propio, almacenamiento local y funcionamiento offline. Cuando vuelve internet, sincroniza con Drive.
-
-Esto evita Electron y mantiene exactamente el mismo código e interfaz que la web/Capacitor.
-
-## Persistencia y sincronización
-
-Estructura sincronizada:
-
-- `members`
-- `payments`
-- `products`
-- `sales`
-- historial de cuota general
-- ajustes simples
-
-Cada socio/pago/producto/venta tiene `id`, `createdAt` y `updatedAt`. Al sincronizar se elige la versión más reciente de cada registro individual. Los registros nuevos de otro dispositivo se conservan.
+El Web Client ID sigue configurado en `.env`; no se escribe desde la app.
 
 ## Tests
 
-La versión incluye tests para:
+```bash
+npm test
+```
 
-- pagos parciales y saldo mensual;
-- historial de cuota sin deuda retroactiva;
-- cuotas especiales;
-- búsqueda aproximada;
-- orden de movimientos por agregado;
-- merge entre dispositivos;
-- productos y ventas de cantina;
-- persistencia local de socios, pagos, productos y ventas.
+Actualmente: **18/18 tests pasando**.

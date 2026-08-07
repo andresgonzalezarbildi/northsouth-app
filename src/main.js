@@ -1,10 +1,11 @@
 import {
-  loadData, saveData, getLegacyDriveConfig, saveConnectedDriveAccount,
+  dataKeyFor, loadData, saveData, verifyLocalStorage, hasLegacyLocalData, exportLegacyLocalData,
   exportBackup, importBackup
 } from './storage.js';
 import { connectGoogle, disconnectGoogle, restoreGoogleToken } from './google-auth.js';
 import { syncWithDrive } from './drive-sync.js';
-import { GOOGLE_WEB_CLIENT_ID } from './app-config.js';
+import { GOOGLE_WEB_CLIENT_ID, ALLOWED_EMAILS, isAllowedEmail } from './app-config.js';
+import { loadAuthSession, saveAuthSession, clearAuthSession, normalizeEmail } from './session.js';
 import {
   activeMembers, activeProducts, cantinaSummary, findMembers, firstUnpaidPeriod, live, livePayments, liveSales,
   memberFee, memberName, memberPeriodStatus, paidThroughPeriod, periodSummary, recentMovements, trend,
@@ -15,20 +16,29 @@ import {
   normalizeText, nowISO, periodLabel, shortPeriodLabel, todayISO, uid
 } from './utils.js';
 
-const envClientId = import.meta.env?.VITE_GOOGLE_WEB_CLIENT_ID || '';
+const APP_VERSION = '6.0.0';
 const app = document.querySelector('#app');
 let installPrompt = null;
 
+const savedSession = loadAuthSession();
 const state = {
-  data: loadData(),
+  account: savedSession,
+  data: savedSession ? loadData(savedSession.email) : null,
+  authBusy: false,
+  authError: '',
   view: 'dashboard',
   memberQuery: '', memberFilter: 'active',
   paymentQuery: '', paymentMethod: 'all', paymentPeriod: 'all',
   feeQuery: '', feeWindowStart: addMonths(currentPeriod(), -1),
   cantinaQuery: '', cantinaProductFilter: 'active',
   modal: null, toast: null, token: null,
-  sync: { kind: navigator.onLine ? 'local' : 'offline', text: navigator.onLine ? 'Guardado local' : 'Sin conexión · guardado local', lastAt: null },
-  syncing: false, syncTimer: null
+  sync: {
+    kind: navigator.onLine ? 'local' : 'offline',
+    text: navigator.onLine ? (GOOGLE_WEB_CLIENT_ID ? 'Local · Drive sin conectar' : 'Guardado local') : 'Sin conexión · guardado local',
+    lastAt: null
+  },
+  syncing: false, syncTimer: null,
+  storageOK: verifyLocalStorage(), memberListScrollY: 0
 };
 
 const viewMeta = {
@@ -42,10 +52,9 @@ const viewMeta = {
 
 const methodLabel = method => ({ cash:'Efectivo', transfer:'Transferencia', other:'Otro', unknown:'Sin especificar' }[method] || 'Otro');
 const initials = name => normalizeText(name).split(' ').filter(Boolean).slice(0,2).map(x => x[0]).join('') || 'NS';
-const getMember = id => live(state.data.members).find(m => m.id === id);
-const getProduct = id => live(state.data.products).find(p => p.id === id);
-const legacyDrive = () => getLegacyDriveConfig();
-const clientId = () => envClientId || GOOGLE_WEB_CLIENT_ID || legacyDrive().webClientId || '';
+const getMember = id => live(state.data?.members).find(m => m.id === id);
+const getProduct = id => live(state.data?.products).find(p => p.id === id);
+const clientId = () => GOOGLE_WEB_CLIENT_ID || '';
 
 function toast(message, type = 'ok') {
   state.toast = { message, type };
@@ -56,10 +65,19 @@ function toast(message, type = 'ok') {
 }
 
 function persist(message = null, { sync = true } = {}) {
+  if (!state.account?.email || !state.data) return false;
   try {
-    state.data = saveData(state.data);
+    state.data = saveData(state.account.email, state.data);
+    const reloaded = loadData(state.account.email);
+    if (reloaded.meta.localRevision !== state.data.meta.localRevision) throw new Error('La verificación local devolvió otra revisión.');
+    state.data = reloaded;
+    state.storageOK = true;
+    state.sync = navigator.onLine
+      ? { ...state.sync, kind: state.token ? state.sync.kind : 'local', text: state.token ? state.sync.text : 'Guardado local · Drive sin conectar' }
+      : { ...state.sync, kind: 'offline', text: 'Sin conexión · guardado local' };
   } catch (e) {
     console.error(e);
+    state.storageOK = false;
     toast('No se pudo guardar en este dispositivo.', 'error');
     return false;
   }
@@ -77,6 +95,7 @@ function clearPageSearches() {
 }
 
 function navigate(view) {
+  if (!state.account) return;
   state.view = view;
   state.modal = null;
   clearPageSearches();
@@ -85,6 +104,7 @@ function navigate(view) {
 
 function scheduleSync() {
   clearTimeout(state.syncTimer);
+  if (!state.account || !state.data) return;
   if (!navigator.onLine) {
     state.sync = { ...state.sync, kind:'offline', text:'Sin conexión · guardado local' };
     render();
@@ -92,16 +112,85 @@ function scheduleSync() {
   }
   if (!clientId()) {
     state.sync = { ...state.sync, kind:'local', text:'Guardado local' };
+    render();
     return;
   }
-  state.syncTimer = setTimeout(() => syncNow(false), 900);
+  if (!state.token) {
+    state.sync = { ...state.sync, kind:'local', text:'Guardado local · Drive sin conectar' };
+    render();
+    return;
+  }
+  state.syncTimer = setTimeout(() => syncNow(false), 700);
+}
+
+async function ensureDriveLogin({ selectAccount = true } = {}) {
+  const cid = clientId();
+  if (!cid) throw new Error('Google no está configurado en esta versión.');
+  const login = await connectGoogle(cid, { selectAccount });
+  const email = normalizeEmail(login.profile?.email);
+  if (!email) {
+    await disconnectGoogle();
+    throw new Error('No se pudo leer el correo de la cuenta de Google.');
+  }
+  if (!isAllowedEmail(email)) {
+    await disconnectGoogle();
+    throw new Error('Esta cuenta no está habilitada para ingresar.');
+  }
+  return { ...login, email };
+}
+
+async function loginWithGoogle() {
+  if (state.authBusy) return;
+  if (!navigator.onLine) {
+    state.authError = 'Necesitás internet para iniciar sesión por primera vez en este dispositivo.';
+    render();
+    return;
+  }
+  if (!clientId()) {
+    state.authError = 'Google no está configurado en esta versión. Revisá el archivo .env.';
+    render();
+    return;
+  }
+  try {
+    state.authBusy = true;
+    state.authError = '';
+    render();
+    const login = await ensureDriveLogin({ selectAccount:true });
+    state.account = saveAuthSession({ email:login.email, name:login.profile?.name || '' });
+    state.data = loadData(state.account.email);
+    state.token = login.token;
+    state.sync = { kind:'local', text:'Guardado local · preparando Drive', lastAt:null };
+    state.view = 'dashboard';
+    state.authBusy = false;
+    render({ preserveScroll:false });
+    await syncNow(false);
+  } catch (e) {
+    console.error(e);
+    state.authBusy = false;
+    state.authError = e.message || 'No se pudo iniciar sesión.';
+    render();
+  }
+}
+
+async function logout() {
+  await disconnectGoogle();
+  clearAuthSession();
+  clearTimeout(state.syncTimer);
+  state.account = null;
+  state.data = null;
+  state.token = null;
+  state.modal = null;
+  state.toast = null;
+  state.authError = '';
+  state.sync = { kind:'local', text:'Guardado local', lastAt:null };
+  render({ preserveScroll:false });
 }
 
 async function syncNow(interactive = false) {
-  if (state.syncing) return;
+  if (state.syncing || !state.account || !state.data) return;
   const cid = clientId();
   if (!cid) {
-    if (interactive) toast('Drive todavía no está configurado en esta versión.', 'error');
+    if (interactive) toast('Google no está configurado en esta versión.', 'error');
     return;
   }
   if (!navigator.onLine) {
@@ -116,17 +205,21 @@ async function syncNow(interactive = false) {
     render();
     let token = state.token || await restoreGoogleToken(cid);
     if (!token && interactive) {
-      const login = await connectGoogle(cid);
+      const login = await ensureDriveLogin({ selectAccount:false });
+      if (login.email !== state.account.email) {
+        await disconnectGoogle();
+        throw new Error(`Conectá Drive con ${state.account.email}.`);
+      }
       token = login.token;
-      saveConnectedDriveAccount(login.profile?.email || legacyDrive().connectedEmail || '');
     }
     if (!token) {
-      state.sync = { ...state.sync, kind:'local', text:'Guardado local' };
+      state.sync = { ...state.sync, kind:'local', text:'Guardado local · Drive sin conectar' };
+      render();
       return;
     }
     state.token = token;
     const result = await syncWithDrive(state.data, token);
-    state.data = saveData(result.data, { markDirty:false });
+    state.data = saveData(state.account.email, result.data, { markDirty:false });
     state.sync = { kind:'ok', text:'Drive al día', lastAt:nowISO() };
     if (interactive) toast(result.created ? 'Drive conectado.' : 'Datos sincronizados.');
   } catch (e) {
@@ -138,6 +231,26 @@ async function syncNow(interactive = false) {
     state.syncing = false;
     render();
   }
+}
+
+function renderLogin() {
+  const configured = Boolean(clientId());
+  const whitelistReady = ALLOWED_EMAILS.length > 0;
+  return `<main class="login-screen">
+    <section class="login-card">
+      <div class="login-logo-wrap"><img src="./assets/north-south-logo.jpg" alt="North South Academy"></div>
+      <div class="login-kicker">NORTH SOUTH</div>
+      <h1>Academy</h1>
+      <p>Ingresá con una cuenta habilitada para acceder a la gestión de la academia.</p>
+      ${state.authError ? `<div class="login-error">${escapeHTML(state.authError)}</div>` : ''}
+      <button class="btn primary login-google" data-action="login-google" ${state.authBusy || !configured || !whitelistReady ? 'disabled' : ''}>
+        <span class="google-g">G</span>${state.authBusy ? 'Ingresando…' : 'Ingresar con Google'}
+      </button>
+      ${!configured ? '<small>Falta VITE_GOOGLE_WEB_CLIENT_ID en .env.</small>' : ''}
+      ${configured && !whitelistReady ? '<small>Falta VITE_ALLOWED_EMAILS en .env.</small>' : ''}
+      <div class="login-foot">Los datos quedan guardados localmente en cada dispositivo y Drive sincroniza cuando hay conexión.</div>
+    </section>
+  </main>`;
 }
 
 function navButton(view, icon, label) {
@@ -160,6 +273,7 @@ function shell(content) {
           ${navButton('cantina','☕','Cantina')}
           ${navButton('settings','⚙','Ajustes')}
         </nav>
+        <div class="sidebar-account"><span>Cuenta</span><strong>${escapeHTML(state.account?.name || state.account?.email || '')}</strong><small>${escapeHTML(state.account?.email || '')}</small></div>
       </aside>
       <main class="main">
         <button class="mobile-brand brand-button" data-view="dashboard"><img src="./assets/north-south-logo.jpg" alt=""><strong>NORTH SOUTH ACADEMY</strong></button>
@@ -196,8 +310,9 @@ function renderDashboard() {
   const futurePaid = futurePeriods.map(p => ({ period:p, count:activeMembers(state.data).filter(m => memberPeriodStatus(state.data,m,p).isPaid).length }));
   const bars = trend(state.data, period, 6);
   const maxBar = Math.max(...bars.map(x => x.total), 1);
+  const isEmptyAccount = !state.data.members.length && !state.data.payments.length && !state.data.products.length && !state.data.sales.length;
 
-  return `
+  return `${isEmptyAccount ? `<section class="card empty-account-hint"><div><strong>Esta cuenta todavía no tiene datos</strong><span>Para cargar la planilla inicial: Ajustes → Importar respaldo → IMPORTAR-DATOS-ACTUALES.json</span></div><button class="btn" data-view="settings">Ir a Ajustes</button></section>` : ''}` + `
     <section class="dashboard-hero card">
       <div class="hero-main">
         <div class="eyebrow">${periodLabel(period)}</div>
@@ -362,15 +477,16 @@ function renderCantina() {
 }
 
 function renderSettings() {
-  const cfg = legacyDrive();
   const imported = state.data.payments.filter(p=>p.source==='xlsx-import').length;
   const driveReady = Boolean(clientId());
+  const legacyAvailable = hasLegacyLocalData();
   return `<div class="settings-grid">
     <section class="card settings-card"><h3>Cuota general</h3><p>Los meses anteriores conservan el valor que tenían.</p><form id="fee-form" class="form-grid compact-form"><div class="field"><label>Nueva cuota</label><input name="defaultFee" type="number" min="1" step="1" value="${Number(state.data.settings.defaultFee)}"></div><div class="field"><label>Rige desde</label><input name="effectiveFrom" type="month" value="${currentPeriod()}"></div><div class="field full"><button class="btn primary" type="submit">Guardar cuota</button></div></form></section>
-    <section class="card settings-card"><h3>Sincronización</h3><p>La app siempre guarda primero en este dispositivo. Cuando hay internet, Drive combina los cambios de los distintos equipos.</p><div class="sync-settings"><div><span class="sync-pill ${state.sync.kind}"><span class="sync-dot"></span>${escapeHTML(state.sync.text)}</span>${cfg.connectedEmail?`<small>${escapeHTML(cfg.connectedEmail)}</small>`:''}</div><div class="settings-actions">${driveReady?`<button class="btn primary" data-action="sync-drive">${cfg.connectedEmail?'Sincronizar ahora':'Conectar Drive'}</button>${cfg.connectedEmail?'<button class="btn ghost" data-action="disconnect-drive">Desconectar</button>':''}`:'<span class="badge inactive">Drive se configura al preparar la app</span>'}</div></div></section>
-    <section class="card settings-card"><h3>App de escritorio</h3><p>En PC puede instalarse como aplicación liviana y seguir funcionando sin conexión.</p><div class="settings-actions"><button class="btn" data-action="install-app" ${installPrompt?'':'disabled'}>Instalar en esta PC</button></div>${!installPrompt?'<small class="settings-note">Si el botón no está disponible, abrila en Chrome o Edge y usá “Instalar aplicación”.</small>':''}</section>
-    <section class="card settings-card"><h3>Respaldo manual</h3><p>Permite guardar una copia completa o restaurarla.</p><div class="settings-actions"><button class="btn" data-action="export-backup">Descargar respaldo</button><label class="btn ghost" for="backup-file">Importar respaldo</label><input id="backup-file" type="file" accept="application/json,.json" hidden></div></section>
-    <section class="card settings-card"><h3>Datos</h3><div class="detail-grid"><div class="detail-stat"><span>Socios</span><strong>${live(state.data.members).length}</strong></div><div class="detail-stat"><span>Activos</span><strong>${activeMembers(state.data).length}</strong></div><div class="detail-stat"><span>Pagos importados</span><strong>${imported}</strong></div><div class="detail-stat"><span>Ventas cantina</span><strong>${liveSales(state.data).length}</strong></div></div></section>
+    <section class="card settings-card"><h3>Sincronización con Drive</h3><p>La app guarda primero en este equipo. Drive combina los cambios cuando hay conexión.</p><div class="sync-settings"><div><span class="sync-pill ${state.sync.kind}"><span class="sync-dot"></span>${escapeHTML(state.sync.text)}</span><small>${escapeHTML(state.account.email)}</small></div><div class="settings-actions"><button class="btn primary" data-action="sync-drive" ${driveReady?'':'disabled'}>${state.token?'Sincronizar ahora':'Conectar Drive'}</button></div></div>${!driveReady?'<small class="settings-note">Google se configura en .env, no dentro de la aplicación.</small>':''}</section>
+    <section class="card settings-card"><h3>Datos y respaldo</h3><p>Una cuenta nueva empieza vacía. El archivo inicial se importa una sola vez.</p><div class="settings-actions"><button class="btn" data-action="export-backup">Descargar respaldo</button><label class="btn ghost" for="backup-file">Importar respaldo</label><input id="backup-file" type="file" accept="application/json,.json" hidden>${legacyAvailable?'<button class="btn ghost" data-action="export-legacy">Descargar datos de la versión anterior</button>':''}</div></section>
+    <section class="card settings-card"><h3>App en esta PC</h3><p>Al instalarla abre en su propia ventana y sigue usando el almacenamiento local aunque no haya internet.</p>${installPrompt?'<div class="settings-actions"><button class="btn" data-action="install-app">Instalar aplicación</button></div>':'<small class="settings-note">El botón aparece al abrir la versión publicada por HTTPS en Chrome o Edge. En localhost usá npm run dev o ABRIR-APP-LOCAL.bat.</small>'}</section>
+    <section class="card settings-card"><h3>Cuenta</h3><div class="account-card"><div><strong>${escapeHTML(state.account.name || state.account.email)}</strong><small>${escapeHTML(state.account.email)}</small></div><button class="btn ghost" data-action="logout">Cerrar sesión</button></div></section>
+    <section class="card settings-card"><h3>Datos</h3><div class="detail-grid"><div class="detail-stat"><span>Socios</span><strong>${live(state.data.members).length}</strong></div><div class="detail-stat"><span>Activos</span><strong>${activeMembers(state.data).length}</strong></div><div class="detail-stat"><span>Pagos importados</span><strong>${imported}</strong></div><div class="detail-stat"><span>Ventas cantina</span><strong>${liveSales(state.data).length}</strong></div></div><small class="settings-note">Versión ${APP_VERSION} · almacenamiento local ${state.storageOK?'activo':'con problema'}</small></section>
   </div>`;
 }
 
@@ -409,7 +525,7 @@ function renderPaymentModal(modal) {
       <div class="field full"><label>Medio de pago</label><input type="hidden" name="method" value="${escapeHTML(d.method)}"><div class="segment">${[['cash','Efectivo'],['transfer','Transferencia'],['other','Otro']].map(([v,l])=>`<button type="button" class="${d.method===v?'active':''}" data-payment-method="${v}">${l}</button>`).join('')}</div></div>
       <div class="field full"><label>Nota <span class="muted-inline">(opcional)</span></label><input name="note" value="${escapeHTML(d.note||'')}" placeholder="Detalle del pago"></div>
     </div>${member?`<div class="payment-preview"><div><span>${months>1?'Total de los meses':'Pendiente del mes'}</span><strong>${money(due.total)}</strong></div><div><span>Después de este pago</span><strong class="${after===0?'good-text':'warn-text'}">${after===0?'Queda pago':`Queda ${money(after)}`}</strong></div></div>`:''}</div>
-    <div class="modal-foot">${editing?`<button type="button" class="btn danger" data-action="delete-payment" data-id="${editing.id}">Eliminar</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button type="submit" class="btn primary" ${!member||due.total<=0?'disabled':''}>Guardar pago</button></div></form>
+    <div class="modal-foot">${editing?`<button type="button" class="btn danger" data-action="delete-payment" data-id="${editing.id}">Eliminar</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button type="button" class="btn primary" data-action="save-payment" ${!member||due.total<=0?'disabled':''}>Guardar pago</button></div></form>
   </div></div>`;
 }
 
@@ -423,7 +539,7 @@ function renderMemberModal(modal) {
       <div class="field"><label>Estado</label><select name="status"><option value="active" ${d.status!=='inactive'?'selected':''}>Activo</option><option value="inactive" ${d.status==='inactive'?'selected':''}>Inactivo</option></select></div><div class="field"><label>Teléfono</label><input name="phone" inputmode="tel" value="${escapeHTML(d.phone||'')}"></div>
       <div class="field"><label>Mutualista</label><input name="medicalProvider" value="${escapeHTML(d.medicalProvider||'')}"></div><div class="field"><label>Fecha de nacimiento</label><input name="birthDate" type="date" value="${escapeHTML(d.birthDate||'')}"></div>
       <div class="field"><label>Fecha de ingreso</label><input name="joinedAt" type="date" value="${escapeHTML(d.joinedAt||'')}"></div><div class="field full"><label>Notas</label><textarea name="notes">${escapeHTML(d.notes||'')}</textarea></div>
-    </div></div><div class="modal-foot"><span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button class="btn primary" type="submit">Guardar socio</button></div></form>
+    </div></div><div class="modal-foot"><span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button class="btn primary" type="button" data-action="save-member">Guardar socio</button></div></form>
   </div></div>`;
 }
 
@@ -450,12 +566,12 @@ function renderSaleModal(modal) {
     <div class="field"><label>Fecha</label><input name="soldAt" type="date" value="${escapeHTML(d.soldAt)}" required></div><div class="field"><label>Total</label><div class="readout">${money(total)}</div></div>
     <div class="field full"><label>Medio de pago</label><input type="hidden" name="method" value="${escapeHTML(d.method)}"><div class="segment">${[['cash','Efectivo'],['transfer','Transferencia'],['other','Otro']].map(([v,l])=>`<button type="button" class="${d.method===v?'active':''}" data-sale-method="${v}">${l}</button>`).join('')}</div></div>
     <div class="field full"><label>Nota <span class="muted-inline">(opcional)</span></label><input name="note" value="${escapeHTML(d.note||'')}"></div>
-  </div></div><div class="modal-foot">${editing?`<button type="button" class="btn danger" data-action="delete-sale" data-id="${editing.id}">Eliminar</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button class="btn cantina-btn" type="submit" ${!member||!product||total<=0?'disabled':''}>Guardar venta</button></div></form></div></div>`;
+  </div></div><div class="modal-foot">${editing?`<button type="button" class="btn danger" data-action="delete-sale" data-id="${editing.id}">Eliminar</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button class="btn cantina-btn" type="button" data-action="save-sale" ${!member||!product||total<=0?'disabled':''}>Guardar venta</button></div></form></div></div>`;
 }
 
 function renderProductModal(modal) {
   const d=modal.draft;
-  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal small-modal" data-modal-stop><div class="modal-head"><div><div class="modal-title">${modal.id?'Editar producto':'Nuevo producto'}</div><div class="panel-subtitle">El emoji aparece en los accesos de cantina.</div></div><button class="close-btn" data-action="close-modal">×</button></div><form id="product-form"><div class="modal-body">${modal.errors?.length?`<div class="form-errors">${modal.errors.map(escapeHTML).join('<br>')}</div>`:''}<div class="form-grid"><div class="field"><label>Emoji</label><input name="emoji" class="emoji-input" value="${escapeHTML(d.emoji||'🛒')}" maxlength="8"></div><div class="field"><label>Producto</label><input name="name" value="${escapeHTML(d.name||'')}" required></div><div class="field"><label>Precio habitual</label><input name="price" type="number" min="0" step="1" value="${Number(d.price||0)}"><small>Si lo dejás en 0, se ingresa al vender.</small></div><div class="field"><label>Estado</label><select name="active"><option value="active" ${d.active!==false?'selected':''}>Activo</option><option value="inactive" ${d.active===false?'selected':''}>Inactivo</option></select></div></div></div><div class="modal-foot">${modal.id?`<button type="button" class="btn danger" data-action="delete-product" data-id="${modal.id}">Eliminar</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button class="btn cantina-btn" type="submit">Guardar producto</button></div></form></div></div>`;
+  return `<div class="modal-backdrop" data-modal-backdrop><div class="modal small-modal" data-modal-stop><div class="modal-head"><div><div class="modal-title">${modal.id?'Editar producto':'Nuevo producto'}</div><div class="panel-subtitle">El emoji aparece en los accesos de cantina.</div></div><button class="close-btn" data-action="close-modal">×</button></div><form id="product-form"><div class="modal-body">${modal.errors?.length?`<div class="form-errors">${modal.errors.map(escapeHTML).join('<br>')}</div>`:''}<div class="form-grid"><div class="field"><label>Emoji</label><input name="emoji" class="emoji-input" value="${escapeHTML(d.emoji||'🛒')}" maxlength="8"></div><div class="field"><label>Producto</label><input name="name" value="${escapeHTML(d.name||'')}" required></div><div class="field"><label>Precio habitual</label><input name="price" type="number" min="0" step="1" value="${Number(d.price||0)}"><small>Si lo dejás en 0, se ingresa al vender.</small></div><div class="field"><label>Estado</label><select name="active"><option value="active" ${d.active!==false?'selected':''}>Activo</option><option value="inactive" ${d.active===false?'selected':''}>Inactivo</option></select></div></div></div><div class="modal-foot">${modal.id?`<button type="button" class="btn danger" data-action="delete-product" data-id="${modal.id}">Eliminar</button>`:''}<span class="foot-spacer"></span><button type="button" class="btn ghost" data-action="close-modal">Cancelar</button><button class="btn cantina-btn" type="button" data-action="save-product">Guardar producto</button></div></form></div></div>`;
 }
 
 function renderModal() {
@@ -470,6 +586,7 @@ function renderModal() {
 
 function render({ preserveScroll = true } = {}) {
   const previousScrollY = preserveScroll ? window.scrollY : 0;
+  if (!state.account || !state.data) { app.innerHTML = renderLogin(); return; }
   const content = state.view==='dashboard'?renderDashboard():state.view==='members'?renderMembers():state.view==='fees'?renderFees():state.view==='payments'?renderPayments():state.view==='cantina'?renderCantina():renderSettings();
   app.innerHTML=shell(content);
   requestAnimationFrame(() => window.scrollTo(0, previousScrollY));
@@ -514,16 +631,22 @@ function refreshPaymentAuto({resetAmount=true}={}) {
 }
 
 app.addEventListener('click', async event => {
-  if(event.target.matches('[data-modal-backdrop]')){state.modal=null;render();return;}
+  if(event.target.matches('[data-modal-backdrop]')){const restore=state.modal?.type==='member-detail'?state.memberListScrollY:null;state.modal=null;render();if(restore!=null)requestAnimationFrame(()=>window.scrollTo(0,restore));return;}
   const viewEl=event.target.closest('[data-view]'); if(viewEl){navigate(viewEl.dataset.view);return;}
   const actionEl=event.target.closest('[data-action]'); if(!actionEl)return;
   const action=actionEl.dataset.action,id=actionEl.dataset.id;
-  if(action==='close-modal'){state.modal=null;render();return;}
+  if(action==='login-google'){await loginWithGoogle();return;}
+  if(action==='logout'){await logout();return;}
+  if(action==='save-payment'){event.preventDefault();document.querySelector('#payment-form')?.requestSubmit();return;}
+  if(action==='save-member'){event.preventDefault();document.querySelector('#member-form')?.requestSubmit();return;}
+  if(action==='save-sale'){event.preventDefault();document.querySelector('#sale-form')?.requestSubmit();return;}
+  if(action==='save-product'){event.preventDefault();document.querySelector('#product-form')?.requestSubmit();return;}
+  if(action==='close-modal'){const restore=state.modal?.type==='member-detail'?state.memberListScrollY:null;state.modal=null;render();if(restore!=null)requestAnimationFrame(()=>window.scrollTo(0,restore));return;}
   if(action==='new-payment'){openPayment();return;}
   if(action==='pay-member'){openPayment(id);return;}
   if(action==='pay-member-period'){openPayment(id,null,actionEl.dataset.period);return;}
   if(action==='new-member'){openMember();return;}
-  if(action==='member-detail'){state.modal={type:'member-detail',id};render();return;}
+  if(action==='member-detail'){state.memberListScrollY=window.scrollY;state.modal={type:'member-detail',id};render();return;}
   if(action==='edit-member'){openMember(getMember(id));return;}
   if(action==='edit-payment'){const p=livePayments(state.data).find(x=>x.id===id);if(p)openPayment('',p);return;}
   if(action==='delete-payment'){const p=state.data.payments.find(x=>x.id===id);if(p&&confirm('¿Eliminar este pago?')){p.deletedAt=nowISO();p.updatedAt=nowISO();state.modal=null;persist('Pago eliminado.');}return;}
@@ -540,8 +663,9 @@ app.addEventListener('click', async event => {
   if(action==='fees-next'){state.feeWindowStart=addMonths(state.feeWindowStart,3);render();return;}
   if(action==='fees-today'){state.feeWindowStart=addMonths(currentPeriod(),-1);render();return;}
   if(action==='sync-drive'){await syncNow(true);return;}
-  if(action==='disconnect-drive'){await disconnectGoogle();state.token=null;saveConnectedDriveAccount('');state.sync={kind:'local',text:'Guardado local',lastAt:state.sync.lastAt};render();toast('Drive desconectado.');return;}
-  if(action==='export-backup'){exportBackup(state.data);toast('Respaldo descargado.');return;}
+  if(action==='disconnect-drive'){await disconnectGoogle();state.token=null;state.sync={kind:'local',text:'Guardado local · Drive sin conectar',lastAt:state.sync.lastAt};render();return;}
+  if(action==='export-backup'){exportBackup(state.data,state.account?.email);toast('Respaldo descargado.');return;}
+  if(action==='export-legacy'){try{exportLegacyLocalData();toast('Datos anteriores descargados.');}catch(e){toast(e.message,'error');}return;}
   if(action==='install-app'&&installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;render();return;}
 });
 
@@ -566,10 +690,22 @@ app.addEventListener('input', event => {
 
 app.addEventListener('change', async event => {
   if(event.target.matches('[data-payment-live]')&&state.modal?.type==='payment'){state.modal.draft[event.target.name]=event.target.name==='months'?Number(event.target.value):event.target.value;refreshPaymentAuto();render();return;}
-  if(event.target.matches('[data-member-fee-mode]')&&state.modal?.type==='member'){state.modal.draft.feeMode=event.target.value;render();return;}
+  if(event.target.matches('[data-member-fee-mode]')&&state.modal?.type==='member'){
+    const form=document.querySelector('#member-form');
+    if(form){
+      const fd=new FormData(form);
+      Object.assign(state.modal.draft,{
+        firstName:String(fd.get('firstName')||''), lastName:String(fd.get('lastName')||''), feeMode:event.target.value,
+        monthlyFee:Number(fd.get('monthlyFee')||state.modal.draft.monthlyFee||state.data.settings.defaultFee),
+        status:String(fd.get('status')||'active'), phone:String(fd.get('phone')||''), medicalProvider:String(fd.get('medicalProvider')||''),
+        birthDate:String(fd.get('birthDate')||''), joinedAt:String(fd.get('joinedAt')||''), notes:String(fd.get('notes')||'')
+      });
+    } else state.modal.draft.feeMode=event.target.value;
+    render();return;
+  }
   if(event.target.id==='payment-period'){state.paymentPeriod=event.target.value;render();return;}
   if(event.target.id==='payment-method-filter'){state.paymentMethod=event.target.value;render();return;}
-  if(event.target.id==='backup-file'&&event.target.files?.[0]){if(!confirm('¿Restaurar este respaldo?')){event.target.value='';return;}try{state.data=await importBackup(event.target.files[0]);render();toast('Respaldo restaurado.');scheduleSync();}catch(e){toast(e.message||'No se pudo importar.','error');}return;}
+  if(event.target.id==='backup-file'&&event.target.files?.[0]){if(!confirm('¿Importar estos datos en la cuenta actual?')){event.target.value='';return;}try{state.data=await importBackup(event.target.files[0],state.account?.email);render();toast('Datos importados.');scheduleSync();}catch(e){toast(e.message||'No se pudo importar.','error');}return;}
 });
 
 app.addEventListener('submit', event => {
@@ -642,6 +778,24 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();installPrompt=event;render();});
 window.addEventListener('appinstalled',()=>{installPrompt=null;toast('Aplicación instalada en esta PC.');});
 
+if(import.meta.env?.DEV && 'serviceWorker' in navigator){
+  // Evita que una PWA vieja instalada en localhost siga sirviendo JS anterior durante desarrollo.
+  navigator.serviceWorker.getRegistrations().then(rows=>Promise.all(rows.map(r=>r.unregister()))).catch(()=>{});
+  if('caches' in window) caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('north-south-')).map(k=>caches.delete(k)))).catch(()=>{});
+}
 if(import.meta.env?.PROD&&'serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(console.warn);
 render();
-setTimeout(()=>syncNow(false),600);
+
+window.addEventListener('storage', event => {
+  if (!state.account?.email || event.key !== dataKeyFor(state.account.email) || !event.newValue || state.modal) return;
+  try { state.data = loadData(state.account.email); render(); } catch { /* conserva la copia actual */ }
+});
+
+async function bootstrapSession() {
+  if (!state.account || !clientId() || !navigator.onLine) return;
+  try {
+    const token = await restoreGoogleToken(clientId());
+    if (token) { state.token = token; await syncNow(false); }
+  } catch { /* la app local sigue funcionando */ }
+}
+bootstrapSession();

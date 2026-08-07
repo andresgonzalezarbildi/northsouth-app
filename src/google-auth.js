@@ -79,7 +79,7 @@ export async function initGoogle(webClientId) {
   initializedFor = webClientId;
 }
 
-export async function connectGoogle(webClientId) {
+export async function connectGoogle(webClientId, { selectAccount = true } = {}) {
   await initGoogle(webClientId);
 
   if (!isNative()) {
@@ -89,7 +89,7 @@ export async function connectGoogle(webClientId) {
         scope: `openid email profile ${DRIVE_SCOPE}`,
         callback: response => response?.error ? reject(new Error(response.error_description || response.error)) : resolve(response)
       });
-      client.requestAccessToken({ prompt: '' });
+      client.requestAccessToken({ prompt: selectAccount ? 'select_account' : '' });
     });
     if (!tokenResult?.access_token) throw new Error('Google no devolvió un token con acceso a Drive.');
     saveWebToken(tokenResult.access_token, tokenResult.expires_in);

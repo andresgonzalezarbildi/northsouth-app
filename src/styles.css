@@ -54,7 +54,7 @@ a { color: inherit; }
 .nav-icon { width: 22px; text-align: center; }
 .sidebar-foot { margin-top: auto; color: #8f8a82; font-size: 11px; padding: 6px; line-height: 1.45; }
 
-.main { min-width: 0; padding: 22px clamp(18px, 3vw, 42px) 48px; }
+.main { min-width: 0; padding: 22px clamp(18px, 3vw, 42px) 48px; position: relative; isolation: isolate; }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
 .topbar-left h1 { margin: 0; font-size: clamp(24px, 3vw, 34px); font-family: Impact, "Arial Black", sans-serif; letter-spacing: 1px; font-weight: 500; }
 .topbar-left p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
@@ -412,3 +412,57 @@ textarea { resize: vertical; min-height: 86px; }
 
 .product-card.product-inactive { opacity: .72; }
 .product-status-badge { min-height: 34px; display: grid; place-items: center; padding: 0 8px; }
+
+/* --- North South v6 --- */
+.main::before {
+  content: ''; position: fixed; z-index: 0; pointer-events: none;
+  width: min(50vw, 620px); aspect-ratio: 1; right: 4vw; bottom: -135px;
+  border-radius: 50%; background: url('/assets/north-south-logo.jpg') center/contain no-repeat; opacity: .065;
+}
+.main > * { position: relative; z-index: 1; }
+.dashboard-hero::before {
+  content: ''; position: absolute; pointer-events: none; width: 280px; aspect-ratio: 1;
+  right: 70px; bottom: -150px; border-radius: 50%;
+  background: url('/assets/north-south-logo.jpg') center/contain no-repeat; opacity: .10;
+}
+.dashboard-hero > * { position: relative; z-index: 1; }
+
+.sidebar-account { margin-top: auto; border-top: 1px solid #2d2d2d; padding: 13px 7px 3px; display: grid; gap: 3px; min-width: 0; }
+.sidebar-account span { color: #77736c; font-size: 10px; text-transform: uppercase; letter-spacing: .7px; font-weight: 800; }
+.sidebar-account strong, .sidebar-account small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-account strong { font-size: 12px; }
+.sidebar-account small { color: var(--muted); font-size: 10px; }
+.account-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.account-card > div { min-width: 0; display: grid; gap: 3px; }
+.account-card strong, .account-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-card small { color: var(--muted); }
+.modal-foot .btn { min-width: 118px; }
+.settings-actions .btn, .settings-actions label.btn { min-width: 146px; }
+.product-actions { grid-template-columns: repeat(2, minmax(82px,1fr)); }
+
+.login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; position: relative; overflow: hidden; }
+.login-screen::before { content:''; position:fixed; width:min(72vw,760px); aspect-ratio:1; right:-9vw; bottom:-34vh; background:url('/assets/north-south-logo.jpg') center/contain no-repeat; border-radius:50%; opacity:.06; pointer-events:none; }
+.login-screen::after { content:''; position:fixed; width:440px; height:440px; border:55px solid rgba(214,31,44,.045); border-radius:50%; left:-150px; top:-190px; pointer-events:none; }
+.login-card { width:min(430px,100%); padding:34px 32px 28px; border:1px solid #353535; border-radius:22px; background:linear-gradient(145deg,rgba(30,30,30,.97),rgba(20,20,20,.97)); box-shadow:0 28px 85px rgba(0,0,0,.5); text-align:center; position:relative; z-index:1; }
+.login-logo-wrap { width:112px; height:112px; margin:0 auto 17px; border-radius:50%; padding:4px; border:2px solid #3d3d3d; background:#111; box-shadow:0 0 0 7px rgba(214,31,44,.055); }
+.login-logo-wrap img { width:100%; height:100%; border-radius:50%; object-fit:cover; }
+.login-kicker { color:#ef6670; font-weight:950; letter-spacing:2px; font-size:13px; }
+.login-card h1 { font-family:Impact,"Arial Black",sans-serif; font-size:38px; letter-spacing:1.4px; margin:3px 0 8px; font-weight:500; }
+.login-card p { color:var(--muted); line-height:1.5; font-size:13px; margin:0 auto 22px; max-width:330px; }
+.login-google { width:100%; min-height:48px; font-size:14px; }
+.google-g { width:24px; height:24px; border-radius:50%; display:grid; place-items:center; background:white; color:#333; font-weight:900; }
+.login-card > small { display:block; margin-top:11px; color:#e0b666; font-size:11px; }
+.login-error { margin:-7px 0 14px; padding:10px 11px; border-radius:10px; border:1px solid #6d2c32; background:#2b171a; color:#ffb4ba; font-size:12px; line-height:1.4; }
+.login-foot { margin-top:20px; padding-top:16px; border-top:1px solid #303030; color:#77736c; font-size:10px; line-height:1.45; }
+
+@media (max-width:720px) {
+  .login-screen { padding:15px; }
+  .login-card { padding:28px 22px 24px; }
+  .login-logo-wrap { width:96px; height:96px; }
+  .modal-foot .btn { min-width:0; flex:1; }
+  .modal-foot .danger { flex:0 1 auto; }
+}
+.empty-account-hint { margin-bottom: 14px; padding: 15px 17px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-color: #55422a; background: linear-gradient(145deg, rgba(49,39,25,.96), rgba(28,25,20,.96)); }
+.empty-account-hint > div { display: grid; gap: 4px; }
+.empty-account-hint span { color: var(--muted); font-size: 12px; line-height: 1.4; }
+@media (max-width:720px) { .empty-account-hint { align-items: stretch; flex-direction: column; } }
