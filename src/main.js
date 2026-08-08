@@ -2,10 +2,11 @@ import {
   dataKeyFor, loadData, saveData, overwriteData, emptyData, verifyLocalStorage,
   exportBackup, importBackup, getDeviceId
 } from './storage.js';
-import { connectGoogle, disconnectGoogle, getGoogleProfile, restoreGoogleToken } from './google-auth.js';
-import { syncWithDrive, resetDriveData } from './drive-sync.js';
-import { createOperation, applyOperations, mergeOperations } from './journal.js';
+import { connectGoogle, disconnectGoogle, getGoogleProfile, googleTokenExpiresAt, invalidateGoogleToken, restoreGoogleToken } from './google-auth.js';
+import { syncWithDrive } from './drive-sync.js';
+import { createOperation, createResetOperation, applyOperations, mergeOperations } from './journal.js';
 import { mergeData } from './merge.js';
+import { makeResetMarker } from './generation.js';
 import { GOOGLE_WEB_CLIENT_ID } from './app-config.js';
 import { loadAuthSession, saveAuthSession, clearAuthSession, normalizeEmail } from './session.js';
 import {
@@ -18,8 +19,10 @@ import {
   normalizeText, nowISO, periodLabel, shortPeriodLabel, todayISO, uid
 } from './utils.js';
 
-const APP_VERSION = '6.3.0';
+const APP_VERSION = '6.5.0';
 const app = document.querySelector('#app');
+const AUTO_SYNC_MS = 30000;
+const DRIVE_LINK_PREFIX = 'northsouth:drive-linked:v1:';
 
 const savedSession = loadAuthSession();
 const state = {
@@ -38,9 +41,14 @@ const state = {
     text: navigator.onLine ? (GOOGLE_WEB_CLIENT_ID ? 'Local · Drive sin conectar' : 'Guardado local') : 'Sin conexión · guardado local',
     lastAt: null
   },
-  syncing: false, syncTimer: null, syncedOperationIds: new Set(),
+  syncing: false, syncTimer: null, syncInterval: null, syncedOperationIds: new Set(),
+  driveLinked: Boolean(savedSession && localStorage.getItem(`${DRIVE_LINK_PREFIX}${encodeURIComponent(savedSession.email)}`) === '1'),
   storageOK: verifyLocalStorage(), memberListScrollY: 0
 };
+
+if (state.driveLinked && navigator.onLine && GOOGLE_WEB_CLIENT_ID) {
+  state.sync = { ...state.sync, kind:'auth', text:'Drive vinculado · comprobando autorización' };
+}
 
 const viewMeta = {
   dashboard: ['Panel', 'Lo importante de la academia, de un vistazo'],
@@ -58,6 +66,45 @@ const getProduct = id => live(state.data?.products).find(p => p.id === id);
 const clientId = () => GOOGLE_WEB_CLIENT_ID || '';
 const compactViewport = () => window.matchMedia?.('(max-width: 720px)').matches ?? window.innerWidth <= 720;
 const CLEAR_PHRASE = 'borrar datos northsouthjjm';
+
+function driveLinkKey(email = state.account?.email) {
+  return email ? `${DRIVE_LINK_PREFIX}${encodeURIComponent(String(email).trim().toLowerCase())}` : '';
+}
+
+function setDriveLinked(value) {
+  state.driveLinked = Boolean(value);
+  const key = driveLinkKey();
+  if (!key) return;
+  if (value) localStorage.setItem(key, '1');
+  else localStorage.removeItem(key);
+}
+
+function syncClock(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '';
+  return d.toLocaleTimeString('es-UY', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+}
+
+function tokenExpiredInWeb() {
+  const native = Boolean(window.Capacitor?.isNativePlatform?.());
+  return !native && Boolean(state.token) && !googleTokenExpiresAt();
+}
+
+function startAutoSync() {
+  clearInterval(state.syncInterval);
+  if (!state.account) return;
+  state.syncInterval = setInterval(() => {
+    if (document.visibilityState !== 'visible' || !navigator.onLine || !state.token || state.syncing) return;
+    syncNow(false);
+  }, AUTO_SYNC_MS);
+}
+
+function stopAutoSync() {
+  clearInterval(state.syncInterval);
+  state.syncInterval = null;
+}
+
 
 function toast(message, type = 'ok') {
   state.toast = { message, type };
@@ -90,7 +137,9 @@ function persist(message = null, { sync = true } = {}) {
     state.sync = !navigator.onLine
       ? { ...state.sync, kind: 'offline', text: `Guardado local · ${pending || 1} cambio${pending === 1 ? '' : 's'} pendiente${pending === 1 ? '' : 's'}` }
       : !state.token
-        ? { ...state.sync, kind: 'local', text: 'Guardado local · Drive sin conectar' }
+        ? state.driveLinked
+          ? { ...state.sync, kind: 'auth', text: `Guardado local · Drive requiere autorización` }
+          : { ...state.sync, kind: 'local', text: 'Guardado local · Drive sin conectar' }
         : { ...state.sync, kind: 'pending', text: `Guardado · ${pending || 1} cambio${pending === 1 ? '' : 's'} pendiente${pending === 1 ? '' : 's'}` };
   } catch (e) {
     console.error(e);
@@ -134,7 +183,9 @@ function scheduleSync() {
     return;
   }
   if (!state.token) {
-    state.sync = { ...state.sync, kind:'local', text:'Guardado local · Drive sin conectar' };
+    state.sync = state.driveLinked
+      ? { ...state.sync, kind:'auth', text:'Drive requiere autorización' }
+      : { ...state.sync, kind:'local', text:'Guardado local · Drive sin conectar' };
     render();
     return;
   }
@@ -144,7 +195,7 @@ function scheduleSync() {
 async function ensureDriveLogin({ selectAccount = true } = {}) {
   const cid = clientId();
   if (!cid) throw new Error('Google no está configurado en esta versión.');
-  const login = await connectGoogle(cid, { selectAccount });
+  const login = await connectGoogle(cid, { selectAccount, loginHint: state.account?.email || '' });
   const email = normalizeEmail(login.profile?.email);
   if (!email) {
     await disconnectGoogle();
@@ -173,10 +224,12 @@ async function loginWithGoogle() {
     state.account = saveAuthSession({ email:login.email, name:login.profile?.name || '' });
     state.data = loadData(state.account.email);
     state.token = login.token;
+    setDriveLinked(true);
     state.syncedOperationIds = new Set();
     state.sync = { kind:'local', text:'Guardado local · preparando Drive', lastAt:null };
     state.view = 'dashboard';
     state.authBusy = false;
+    startAutoSync();
     render({ preserveScroll:false });
     await syncNow(false);
   } catch (e) {
@@ -189,8 +242,10 @@ async function loginWithGoogle() {
 
 async function logout() {
   await disconnectGoogle();
+  setDriveLinked(false);
   clearAuthSession();
   clearTimeout(state.syncTimer);
+  stopAutoSync();
   state.account = null;
   state.data = null;
   state.token = null;
@@ -203,24 +258,30 @@ async function logout() {
 }
 
 async function syncNow(interactive = false) {
-  if (state.syncing || !state.account || !state.data) return;
+  if (state.syncing || !state.account || !state.data) {
+    if (interactive && state.syncing) toast('Drive ya se está sincronizando.');
+    return;
+  }
   const cid = clientId();
   if (!cid) {
     if (interactive) toast('Google no está configurado en esta versión.', 'error');
     return;
   }
   if (!navigator.onLine) {
-    state.sync = { ...state.sync, kind:'offline', text:'Sin conexión · guardado local' };
+    const pending = pendingOperationCount();
+    state.sync = { ...state.sync, kind:'offline', text:pending ? `Sin conexión · ${pending} cambio${pending===1?'':'s'} local${pending===1?'':'es'}` : 'Sin conexión · datos guardados localmente' };
     if (interactive) toast('Sin internet. Todo sigue guardado en este dispositivo.', 'error');
     render();
     return;
   }
+
+  if (tokenExpiredInWeb()) {
+    await invalidateGoogleToken();
+    state.token = null;
+  }
+
   let syncSucceeded = false;
   try {
-    state.syncing = true;
-    const pendingBefore = pendingOperationCount();
-    state.sync = { ...state.sync, kind:'busy', text: pendingBefore ? `Guardado · sincronizando ${pendingBefore} cambio${pendingBefore===1?'':'s'}…` : 'Comprobando Drive…' };
-    render();
     let token = state.token;
     if (!token) {
       token = await restoreGoogleToken(cid);
@@ -228,27 +289,49 @@ async function syncNow(interactive = false) {
         const profile = await getGoogleProfile(token);
         const tokenEmail = normalizeEmail(profile?.email);
         if (!tokenEmail || tokenEmail !== state.account.email) {
-          await disconnectGoogle();
-          throw new Error(`La cuenta de Drive no coincide con ${state.account.email}. Volvé a iniciar sesión.`);
+          await invalidateGoogleToken();
+          token = null;
         }
       }
     }
+
+    // En la web Google no permite renovar un access token vencido en segundo plano.
+    // Si el usuario apretó el botón, ese click sí es el gesto necesario para renovarlo.
     if (!token && interactive) {
       const login = await ensureDriveLogin({ selectAccount:false });
       if (login.email !== state.account.email) {
         await disconnectGoogle();
+        setDriveLinked(false);
         throw new Error(`Conectá Drive con ${state.account.email}.`);
       }
       token = login.token;
+      setDriveLinked(true);
     }
+
     if (!token) {
-      state.sync = { ...state.sync, kind:'local', text:'Guardado local · Drive sin conectar' };
+      const pending = pendingOperationCount();
+      state.sync = state.driveLinked
+        ? { ...state.sync, kind:'auth', text:pending ? `Drive requiere autorización · ${pending} cambio${pending===1?'':'s'} local${pending===1?'':'es'}` : 'Drive requiere autorización', lastError:'' }
+        : { ...state.sync, kind:'local', text:'Guardado local · Drive sin conectar', lastError:'' };
       render();
       return;
     }
+
     state.token = token;
+    setDriveLinked(true);
+    state.syncing = true;
+    const pendingBefore = pendingOperationCount();
+    state.sync = { ...state.sync, kind:'busy', text: pendingBefore ? `Drive · sincronizando ${pendingBefore} cambio${pendingBefore===1?'':'s'}…` : 'Drive · iniciando comprobación…', lastError:'' };
+    render();
+
     const syncStartData = structuredClone(state.data);
-    const result = await syncWithDrive(syncStartData, token);
+    const result = await syncWithDrive(syncStartData, token, {
+      onProgress: ({ text }) => {
+        if (!state.syncing) return;
+        state.sync = { ...state.sync, kind:'busy', text:text || 'Drive · sincronizando…' };
+        render();
+      }
+    });
 
     // Si el usuario guardó algo mientras Drive estaba trabajando, se combina con el resultado
     // en vez de reemplazar el estado actual por una copia iniciada unos segundos antes.
@@ -263,17 +346,24 @@ async function syncNow(interactive = false) {
     state.data = saveData(state.account.email, combined, { markDirty:false });
     state.syncedOperationIds = new Set(result.remoteOperationIds || []);
     const pendingAfter = pendingOperationCount();
+    const syncedAt = nowISO();
     state.sync = pendingAfter
-      ? { kind:'pending', text:`Guardado · ${pendingAfter} cambio${pendingAfter===1?'':'s'} pendiente${pendingAfter===1?'':'s'}`, lastAt:nowISO() }
-      : { kind:'ok', text:'Drive al día', lastAt:nowISO() };
+      ? { kind:'pending', text:`Drive conectado · ${pendingAfter} cambio${pendingAfter===1?'':'s'} pendiente${pendingAfter===1?'':'s'}`, lastAt:syncedAt, lastError:'' }
+      : { kind:'ok', text:`Drive al día · ${syncClock(syncedAt)}`, lastAt:syncedAt, lastError:'' };
     syncSucceeded = true;
-    if (interactive) toast(pendingAfter ? 'Los cambios locales están guardados; queda sincronización pendiente.' : (result.created ? 'Drive conectado.' : 'Datos sincronizados.'));
+    if (interactive) toast(pendingAfter ? 'Los cambios locales están guardados; queda sincronización pendiente.' : (result.created ? 'Drive conectado y sincronizado.' : 'Drive sincronizado.'));
   } catch (e) {
     console.error(e);
     const pending = pendingOperationCount();
-    state.sync = { ...state.sync, kind:'error', text:pending?`Guardado local · ${pending} cambio${pending===1?'':'s'} pendiente${pending===1?'':'s'}`:'Drive pendiente', lastAt:state.sync.lastAt };
-    if (interactive) toast(e.message || 'No se pudo sincronizar.', 'error');
-    if (/venció|401/i.test(e.message || '')) state.token = null;
+    const message = e.message || 'No se pudo sincronizar.';
+    if (/venció|401|Unauthorized/i.test(message)) {
+      await invalidateGoogleToken();
+      state.token = null;
+      state.sync = { ...state.sync, kind:'auth', text:pending ? `Drive requiere autorización · ${pending} cambio${pending===1?'':'s'} local${pending===1?'':'es'}` : 'Drive requiere autorización', lastError:'La autorización de Google venció. Tocá “Renovar acceso a Drive”.' };
+    } else {
+      state.sync = { ...state.sync, kind:'error', text:pending ? `Drive con error · ${pending} cambio${pending===1?'':'s'} seguro${pending===1?'':'s'} localmente` : 'Drive con error · datos locales seguros', lastError:message };
+    }
+    if (interactive) toast(message, 'error');
   } finally {
     state.syncing = false;
     render();
@@ -331,6 +421,7 @@ function shell(content) {
             <button class="btn cantina-btn top-action" data-action="new-sale"><span class="action-icon">☕</span><span>Venta cantina</span></button>
           </div>
         </header>
+        <button class="mobile-sync-status sync-pill ${state.sync.kind}" data-view="settings"><span class="sync-dot"></span>${escapeHTML(state.sync.text)}</button>
         ${content}
       </main>
       <nav class="mobile-nav">
@@ -527,14 +618,16 @@ function renderSettings() {
   const deviceId = getDeviceId();
   const activity = (state.data.operations || []).slice().sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,20);
   const pending = pendingOperationCount();
+  const driveButton = state.syncing ? 'Sincronizando…' : state.token ? 'Sincronizar ahora' : state.driveLinked ? 'Renovar acceso a Drive' : 'Conectar Drive';
+  const lastSync = state.sync.lastAt ? `Última sincronización correcta: ${syncClock(state.sync.lastAt)}` : 'Todavía no hubo una sincronización correcta en esta sesión.';
   return `<div class="settings-grid">
     <section class="card settings-card"><h3>Cuota general</h3><p>Los meses anteriores conservan el valor que tenían.</p><form id="fee-form" class="form-grid compact-form"><div class="field"><label>Nueva cuota</label><input name="defaultFee" type="number" min="1" step="1" value="${Number(state.data.settings.defaultFee)}"></div><div class="field"><label>Rige desde</label><input name="effectiveFrom" type="month" value="${currentPeriod()}"></div><div class="field full"><button class="btn primary" type="submit">Guardar cuota</button></div></form></section>
-    <section class="card settings-card"><h3>Sincronización con Drive</h3><p>La app guarda primero en este equipo. Drive combina los cambios cuando hay conexión.</p><div class="sync-settings"><div><span class="sync-pill ${state.sync.kind}"><span class="sync-dot"></span>${escapeHTML(state.sync.text)}</span><small>${escapeHTML(state.account.email)}</small></div><div class="settings-actions"><button class="btn primary" data-action="sync-drive" ${driveReady?'':'disabled'}>${state.token?'Sincronizar ahora':'Conectar Drive'}</button></div></div>${!driveReady?'<small class="settings-note">Google se configura en .env, no dentro de la aplicación.</small>':''}</section>
+    <section class="card settings-card"><h3>Sincronización con Drive</h3><p>Todo se guarda primero en este equipo. Con Drive autorizado, se sincroniza después de cada cambio, cada 30 segundos y al volver a esta pestaña.</p><div class="sync-settings"><div><span class="sync-pill ${state.sync.kind}"><span class="sync-dot"></span>${escapeHTML(state.sync.text)}</span><small>${escapeHTML(state.account.email)}</small><small>${escapeHTML(lastSync)}</small>${state.sync.lastError?`<small class="sync-error-detail">${escapeHTML(state.sync.lastError)}</small>`:''}</div><div class="settings-actions"><button class="btn primary" data-action="sync-drive" ${driveReady&&!state.syncing?'':'disabled'}>${driveButton}</button></div></div>${!driveReady?'<small class="settings-note">Google se configura en .env, no dentro de la aplicación.</small>':''}</section>
     <section class="card settings-card"><h3>Datos y respaldo</h3><p>Podés descargar una copia o importar un respaldo de North South.</p><div class="settings-actions"><button class="btn" data-action="export-backup">Descargar respaldo</button><label class="btn ghost" for="backup-file">Importar respaldo</label><input id="backup-file" type="file" accept="application/json,.json" hidden></div></section>
     <section class="card settings-card"><h3>Cuenta</h3><div class="account-card"><div><strong>${escapeHTML(state.account.name || state.account.email)}</strong><small>${escapeHTML(state.account.email)}</small></div><button class="btn ghost" data-action="logout">Cerrar sesión</button></div></section>
     <section class="card settings-card"><h3>Datos</h3><div class="detail-grid"><div class="detail-stat"><span>Socios</span><strong>${live(state.data.members).length}</strong></div><div class="detail-stat"><span>Activos</span><strong>${activeMembers(state.data).length}</strong></div><div class="detail-stat"><span>Pagos importados</span><strong>${imported}</strong></div><div class="detail-stat"><span>Ventas cantina</span><strong>${liveSales(state.data).length}</strong></div></div><small class="settings-note">Versión ${APP_VERSION} · almacenamiento local ${state.storageOK?'activo':'con problema'}</small></section>
     <section class="card settings-card danger-zone"><h3>Borrar todos los datos</h3><p>Vacía socios, pagos, cantina y el registro de cambios de esta cuenta, también en Drive. Requiere una confirmación escrita.</p><button class="btn danger" data-action="open-clear-data">Borrar todos los datos</button></section>
-    <section class="card settings-card settings-wide"><div class="activity-head"><div><h3>Registro de cambios</h3><p>Cada acción se guarda primero acá y después se copia a Drive como una operación independiente.</p></div><span class="badge ${pending?'warn':'ok'}">${pending?`${pending} pendiente${pending===1?'':'s'}`:'Todo sincronizado'}</span></div><div class="activity-log">${activity.map(op=>{const synced=state.syncedOperationIds.has(op.id);const own=op.deviceId===deviceId;return `<div class="activity-row"><div class="activity-mark ${synced?'synced':'pending'}"></div><div class="row-main"><div class="row-title">${escapeHTML(op.label)}</div><div class="row-sub">${dateTimeLabel(op.createdAt)} · ${own?'este equipo':'otro equipo'} · ${op.changes?.length||0} cambio${op.changes?.length===1?'':'s'}</div></div><span class="activity-status ${synced?'synced':'pending'}">${synced?'En Drive':'Local'}</span></div>`}).join('')||'<div class="empty">Todavía no hay cambios registrados en esta versión.</div>'}</div></section>
+    <section class="card settings-card settings-wide"><div class="activity-head"><div><h3>Registro de cambios</h3><p>Cada acción se guarda primero acá y después se copia a Drive como una operación independiente.</p></div><span class="badge ${pending?'warn':'ok'}">${pending?`${pending} pendiente${pending===1?'':'s'}`:'Todo sincronizado'}</span></div><div class="activity-log">${activity.map(op=>{const synced=state.syncedOperationIds.has(op.id);const own=op.deviceId===deviceId;return `<div class="activity-row"><div class="activity-mark ${synced?'synced':'pending'}"></div><div class="row-main"><div class="row-title">${escapeHTML(op.label)}</div><div class="row-sub">${dateTimeLabel(op.createdAt)} · ${own?'este equipo':'otro equipo'} · ${op.type==='reset'?'borrado total':`${op.changes?.length||0} cambio${op.changes?.length===1?'':'s'}`}</div></div><span class="activity-status ${synced?'synced':'pending'}">${synced?'En Drive':'Local'}</span></div>`}).join('')||'<div class="empty">Todavía no hay cambios registrados en esta versión.</div>'}</div></section>
   </div>`;
 }
 
@@ -750,22 +843,31 @@ app.addEventListener('click', async event => {
   if(action==='fees-next'){state.feeWindowStart=addMonths(state.feeWindowStart,3);render();return;}
   if(action==='fees-today'){state.feeWindowStart=addMonths(currentPeriod(),-1);render();return;}
   if(action==='sync-drive'){await syncNow(true);return;}
-  if(action==='disconnect-drive'){await disconnectGoogle();state.token=null;state.sync={kind:'local',text:'Guardado local · Drive sin conectar',lastAt:state.sync.lastAt};render();return;}
+  if(action==='disconnect-drive'){await disconnectGoogle();setDriveLinked(false);state.token=null;state.sync={kind:'local',text:'Guardado local · Drive sin conectar',lastAt:state.sync.lastAt,lastError:''};render();return;}
   if(action==='export-backup'){exportBackup(state.data,state.account?.email);toast('Respaldo descargado.');return;}
   if(action==='open-clear-data'){state.modal={type:'clear-data',errors:[],draft:{phrase:''}};render();return;}
   if(action==='confirm-clear-data'){
     if(state.modal?.type!=='clear-data'||state.modal.draft.phrase!==CLEAR_PHRASE)return;
-    if(!navigator.onLine){state.modal.errors=['Necesitás internet para borrar también la copia de Drive.'];render();return;}
     try {
-      let token=state.token||await restoreGoogleToken(clientId());
-      if(!token){const login=await ensureDriveLogin({selectAccount:false});if(login.email!==state.account.email)throw new Error(`Conectá Drive con ${state.account.email}.`);token=login.token;}
-      state.token=token;
-      const reset=emptyData(`north-south-academy-main:${crypto.randomUUID()}`);
-      const remote=await resetDriveData(reset,token);
-      state.data=overwriteData(state.account.email,remote.data,{markDirty:false});
+      const timestamp=nowISO(), datasetId=`north-south-academy-main:${crypto.randomUUID()}`;
+      const reset=emptyData(datasetId);
+      const marker=makeResetMarker(datasetId,{createdAt:timestamp,deviceId:getDeviceId()});
+      reset.meta.reset=marker;
+      reset.meta.generationCreatedAt=timestamp;
+      reset.operations=[createResetOperation(reset,{createdAt:timestamp,deviceId:getDeviceId()})];
+      state.data=overwriteData(state.account.email,reset,{markDirty:true});
       state.syncedOperationIds=new Set();
-      state.modal=null;state.view='dashboard';state.sync={kind:'ok',text:'Drive al día',lastAt:nowISO()};
-      render({preserveScroll:false});toast('Todos los datos fueron borrados.');
+      state.modal=null;state.view='dashboard';
+      state.sync=!navigator.onLine
+        ? {kind:'offline',text:'Datos borrados · Drive pendiente',lastAt:state.sync.lastAt}
+        : state.token
+          ? {kind:'pending',text:'Datos borrados · sincronización pendiente',lastAt:state.sync.lastAt}
+          : state.driveLinked
+            ? {kind:'auth',text:'Datos borrados · Drive requiere autorización',lastAt:state.sync.lastAt}
+            : {kind:'local',text:'Datos borrados · Drive sin conectar',lastAt:state.sync.lastAt};
+      render({preserveScroll:false});
+      toast(state.token&&navigator.onLine?'Todos los datos fueron borrados. Drive se actualizará ahora.':'Todos los datos fueron borrados en este equipo. Se aplicará a Drive al reconectar.');
+      scheduleSync();
     } catch(e){console.error(e);state.modal.errors=[e.message||'No se pudieron borrar los datos.'];render();}
     return;
   }
@@ -892,9 +994,10 @@ app.addEventListener('submit', event => {
 });
 
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&state.modal){state.modal=null;render();}});
-window.addEventListener('online',()=>{state.sync={...state.sync,kind:'local',text:'Conexión recuperada'};render();scheduleSync();});
-window.addEventListener('offline',()=>{state.sync={...state.sync,kind:'offline',text:'Sin conexión · guardado local'};render();});
+window.addEventListener('online',()=>{state.sync={...state.sync,kind:state.token?'pending':state.driveLinked?'auth':'local',text:state.token?'Conexión recuperada · comprobando Drive':state.driveLinked?'Conexión recuperada · Drive requiere autorización':'Conexión recuperada · guardado local'};render();scheduleSync();});
+window.addEventListener('offline',()=>{const pending=pendingOperationCount();state.sync={...state.sync,kind:'offline',text:pending?`Sin conexión · ${pending} cambio${pending===1?'':'s'} local${pending===1?'':'es'}`:'Sin conexión · datos guardados localmente'};render();});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')scheduleSync();});
+window.addEventListener('focus',()=>scheduleSync());
 
 window.addEventListener('resize',()=>{if(state.view==='fees'&&compactViewport())navigate('payments');});
 
@@ -912,10 +1015,24 @@ window.addEventListener('storage', event => {
 });
 
 async function bootstrapSession() {
-  if (!state.account || !clientId() || !navigator.onLine) return;
+  if (!state.account) return;
+  startAutoSync();
+  if (!clientId() || !navigator.onLine) return;
   try {
     const token = await restoreGoogleToken(clientId());
-    if (token) { state.token = token; await syncNow(false); }
-  } catch { /* la app local sigue funcionando */ }
+    if (token) {
+      state.token = token;
+      setDriveLinked(true);
+      await syncNow(false);
+    } else if (state.driveLinked) {
+      state.sync = { ...state.sync, kind:'auth', text:'Drive requiere autorización', lastError:'Google necesita que renueves el acceso desde el botón de Drive.' };
+      render();
+    }
+  } catch {
+    state.sync = state.driveLinked
+      ? { ...state.sync, kind:'auth', text:'Drive requiere autorización' }
+      : state.sync;
+    render();
+  }
 }
 bootstrapSession();

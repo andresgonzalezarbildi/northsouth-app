@@ -21,3 +21,10 @@ test('cerrar sesión elimina solamente la sesión de autenticación', () => {
   clearAuthSession();
   assert.equal(loadAuthSession(), null);
 });
+
+test('la UI separa sesión local de autorización temporal de Drive', async () => {
+  const source = await import('node:fs/promises').then(fs => fs.readFile(new URL('../src/google-auth.js', import.meta.url), 'utf8'));
+  assert.match(source, /memoryTokenExpiresAt/);
+  assert.match(source, /invalidateGoogleToken/);
+  assert.match(source, /memoryTokenExpiresAt > Date\.now\(\)/);
+});

@@ -69,7 +69,9 @@ test('borrado total requiere la frase exacta y una nueva generación', () => {
   assert.match(source, /borrar datos northsouthjjm/);
   assert.match(source, /data-action="confirm-clear-data"/);
   assert.match(source, /north-south-academy-main:\$\{crypto\.randomUUID\(\)\}/);
-  assert.match(source, /resetDriveData\(reset,token\)/);
+  assert.match(source, /makeResetMarker\(datasetId/);
+  assert.match(source, /reset\.meta\.reset=marker/);
+  assert.match(source, /scheduleSync\(\)/);
 });
 
 test('escribir montos no reconstruye el modal en cada tecla', () => {
@@ -87,4 +89,22 @@ test('cuotas no queda accesible como vista en pantallas chicas', () => {
   assert.match(source, /view === 'fees' && compactViewport\(\)/);
   const mobileNav = source.match(/<nav class="mobile-nav">([\s\S]*?)<\/nav>/)?.[1] || '';
   assert.equal(mobileNav.includes('data-view="fees"'), false);
+});
+
+test('Drive muestra estados claros y sincronización automática', () => {
+  assert.match(source, /const AUTO_SYNC_MS = 30000/);
+  assert.match(source, /Drive requiere autorización/);
+  assert.match(source, /Renovar acceso a Drive/);
+  assert.match(source, /Última sincronización correcta/);
+  assert.match(source, /window\.addEventListener\('focus',\(\)=>scheduleSync\(\)\)/);
+});
+
+test('una sincronización informa sus etapas en vez de quedar solo en Comprobando', () => {
+  assert.match(source, /onProgress: \(\{ text \}\)/);
+  assert.match(source, /Drive · iniciando comprobación/);
+});
+
+test('el estado de Drive también es visible en móvil', () => {
+  assert.match(source, /mobile-sync-status sync-pill/);
+  assert.match(source, /data-view="settings"/);
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createOperation, applyOperations, mergeOperations } from '../src/journal.js';
+import { createOperation, createResetOperation, applyOperations, mergeOperations } from '../src/journal.js';
 import { normalizeData } from '../src/storage.js';
 
 function baseData() {
@@ -50,4 +50,15 @@ test('un borrado queda registrado como tombstone dentro del log', () => {
   assert.equal(op.changes.length,1);
   assert.equal(op.changes[0].collection,'products');
   assert.equal(op.changes[0].record.deletedAt,'2026-08-07T13:00:00Z');
+});
+
+
+test('el borrado total queda también como evento del log', () => {
+  const reset = baseData();
+  reset.datasetId = 'north-south-academy-main:reset-1';
+  const op = createResetOperation(reset,{id:'op-reset',deviceId:'pc-a',createdAt:'2026-08-07T14:00:00Z'});
+  assert.equal(op.type,'reset');
+  assert.equal(op.datasetId,reset.datasetId);
+  assert.equal(op.changes.length,0);
+  assert.equal(op.label,'Todos los datos borrados.');
 });

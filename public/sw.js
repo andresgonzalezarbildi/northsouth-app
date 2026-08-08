@@ -1,4 +1,4 @@
-const CACHE = 'north-south-v6-3';
+const CACHE = 'north-south-v6-5';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './assets/north-south-logo.jpg', './assets/icon-192.png', './assets/icon-512.png',

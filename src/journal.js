@@ -39,6 +39,20 @@ export function createOperation(before, after, { label = 'Cambio guardado', devi
   return operation;
 }
 
+
+export function createResetOperation(data, { label = 'Todos los datos borrados.', deviceId = '', id = null, createdAt = null } = {}) {
+  return normalizeOperation({
+    id: id || `op-${crypto.randomUUID()}`,
+    datasetId: data?.datasetId || 'north-south-academy-main',
+    type: 'reset',
+    label,
+    createdAt: createdAt || nowISO(),
+    deviceId,
+    changes: [],
+    settings: null
+  });
+}
+
 export function mergeOperations(local = [], remote = []) {
   const map = new Map();
   [...local, ...remote].forEach(raw => {

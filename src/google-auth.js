@@ -2,6 +2,7 @@ const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const WEB_TOKEN_KEY = 'northsouth:google-token-session';
 let initializedFor = null;
 let memoryToken = null;
+let memoryTokenExpiresAt = 0;
 let nativePlugin = null;
 let gisPromise = null;
 
@@ -39,31 +40,63 @@ function loadGIS() {
 }
 
 function saveWebToken(token, expiresIn = 3500) {
+  const expiresAt = Date.now() + Math.max(60, Number(expiresIn || 3500) - 60) * 1000;
   memoryToken = token;
-  sessionStorage.setItem(WEB_TOKEN_KEY, JSON.stringify({
-    token,
-    expiresAt: Date.now() + Math.max(60, Number(expiresIn || 3500) - 60) * 1000
-  }));
+  memoryTokenExpiresAt = expiresAt;
+  sessionStorage.setItem(WEB_TOKEN_KEY, JSON.stringify({ token, expiresAt }));
+}
+
+function clearWebToken() {
+  sessionStorage.removeItem(WEB_TOKEN_KEY);
+  memoryToken = null;
+  memoryTokenExpiresAt = 0;
 }
 
 function restoreWebToken() {
-  if (memoryToken) return memoryToken;
+  if (memoryToken) {
+    if (memoryTokenExpiresAt > Date.now()) return memoryToken;
+    clearWebToken();
+  }
   try {
     const saved = JSON.parse(sessionStorage.getItem(WEB_TOKEN_KEY) || 'null');
     if (saved?.token && Number(saved.expiresAt) > Date.now()) {
       memoryToken = saved.token;
+      memoryTokenExpiresAt = Number(saved.expiresAt);
       return memoryToken;
     }
   } catch { /* noop */ }
-  sessionStorage.removeItem(WEB_TOKEN_KEY);
+  clearWebToken();
   return null;
 }
 
+export function googleTokenExpiresAt() {
+  if (isNative()) return null;
+  restoreWebToken();
+  return memoryTokenExpiresAt || null;
+}
+
+export async function invalidateGoogleToken() {
+  if (!isNative()) {
+    clearWebToken();
+    return;
+  }
+  // En Android se conserva la sesión del proveedor; solamente se descarta
+  // el token en memoria para que el plugin pueda obtener uno nuevo.
+  memoryToken = null;
+}
+
 export async function getGoogleProfile(token) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${token}` } });
+    const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+      signal: controller.signal
+    });
     return r.ok ? await r.json() : null;
   } catch { return null; }
+  finally { clearTimeout(timer); }
 }
 
 export async function initGoogle(webClientId) {
@@ -79,7 +112,7 @@ export async function initGoogle(webClientId) {
   initializedFor = webClientId;
 }
 
-export async function connectGoogle(webClientId, { selectAccount = true } = {}) {
+export async function connectGoogle(webClientId, { selectAccount = true, loginHint = '' } = {}) {
   await initGoogle(webClientId);
 
   if (!isNative()) {
@@ -87,9 +120,18 @@ export async function connectGoogle(webClientId, { selectAccount = true } = {}) 
       const client = window.google.accounts.oauth2.initTokenClient({
         client_id: webClientId,
         scope: `openid email profile ${DRIVE_SCOPE}`,
-        callback: response => response?.error ? reject(new Error(response.error_description || response.error)) : resolve(response)
+        login_hint: loginHint || undefined,
+        callback: response => response?.error ? reject(new Error(response.error_description || response.error)) : resolve(response),
+        error_callback: error => reject(new Error(
+          error?.type === 'popup_closed' ? 'Se cerró la autorización de Google.' :
+          error?.type === 'popup_failed_to_open' ? 'El navegador bloqueó la ventana de autorización de Google.' :
+          'No se pudo abrir la autorización de Google.'
+        ))
       });
-      client.requestAccessToken({ prompt: selectAccount ? 'select_account' : '' });
+      client.requestAccessToken({
+        prompt: selectAccount ? 'select_account' : '',
+        login_hint: loginHint || undefined
+      });
     });
     if (!tokenResult?.access_token) throw new Error('Google no devolvió un token con acceso a Drive.');
     saveWebToken(tokenResult.access_token, tokenResult.expires_in);
@@ -132,8 +174,7 @@ export async function disconnectGoogle() {
     try {
       if (token && window.google?.accounts?.oauth2) window.google.accounts.oauth2.revoke(token, () => {});
     } catch { /* noop */ }
-    sessionStorage.removeItem(WEB_TOKEN_KEY);
-    memoryToken = null;
+    clearWebToken();
     return;
   }
   try {

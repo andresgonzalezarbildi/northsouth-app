@@ -39,3 +39,22 @@ test('merge combina historial de cuotas de dos equipos', () => {
   assert.ok(merged.settings.feeHistory.some(x=>x.id==='f2'));
   assert.ok(merged.settings.feeHistory.some(x=>x.id==='f3'));
 });
+
+
+test('en conflicto sobre una entidad gana el updatedAt posterior', () => {
+  const local=data(),remote=data();
+  local.members[0].displayName='CAMBIO NUEVO';
+  local.members[0].updatedAt='2026-08-07T12:05:00Z';
+  remote.members[0].displayName='CAMBIO VIEJO';
+  remote.members[0].updatedAt='2026-08-07T12:00:00Z';
+  assert.equal(mergeData(local,remote).members[0].displayName,'CAMBIO NUEVO');
+});
+
+test('un borrado posterior no puede ser revivido por una copia vieja', () => {
+  const local=data(),remote=data();
+  local.members[0].deletedAt='2026-08-07T12:05:00Z';
+  local.members[0].updatedAt='2026-08-07T12:05:00Z';
+  remote.members[0].deletedAt=null;
+  remote.members[0].updatedAt='2026-08-07T12:00:00Z';
+  assert.equal(mergeData(local,remote).members[0].deletedAt,'2026-08-07T12:05:00Z');
+});

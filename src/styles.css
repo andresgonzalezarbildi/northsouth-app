@@ -516,3 +516,9 @@ img, svg, canvas { max-width: 100%; }
   .filter-tab { flex: 1 1 0; min-width: 0; padding-left: 6px; padding-right: 6px; }
   .modal-body, .modal-head, .modal-foot { max-width: 100vw; overflow-x: hidden; }
 }
+.sync-pill.auth .sync-dot { background: #8fb7ff; box-shadow: 0 0 0 3px rgba(143,183,255,.09); }
+.sync-error-detail { color: #ff9da4 !important; max-width: 420px; line-height: 1.4; }
+.mobile-sync-status { display: none; border: 1px solid #323232; font: inherit; cursor: pointer; width: fit-content; max-width: 100%; }
+@media (max-width: 720px) {
+  .mobile-sync-status { display: inline-flex; margin: -4px 0 12px; white-space: normal; text-align: left; }
+}
