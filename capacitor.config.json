@@ -5,6 +5,9 @@
   "server": {
     "androidScheme": "https"
   },
+  "android": {
+    "captureInput": true
+  },
   "plugins": {
     "SocialLogin": {
       "providers": {

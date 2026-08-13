@@ -43,11 +43,14 @@ function saveWebToken(token, expiresIn = 3500) {
   const expiresAt = Date.now() + Math.max(60, Number(expiresIn || 3500) - 60) * 1000;
   memoryToken = token;
   memoryTokenExpiresAt = expiresAt;
-  sessionStorage.setItem(WEB_TOKEN_KEY, JSON.stringify({ token, expiresAt }));
+  const value = JSON.stringify({ token, expiresAt });
+  try { localStorage.setItem(WEB_TOKEN_KEY, value); } catch { /* usa sessionStorage */ }
+  try { sessionStorage.setItem(WEB_TOKEN_KEY, value); } catch { /* almacenamiento no disponible */ }
 }
 
 function clearWebToken() {
-  sessionStorage.removeItem(WEB_TOKEN_KEY);
+  try { localStorage.removeItem(WEB_TOKEN_KEY); } catch { /* noop */ }
+  try { sessionStorage.removeItem(WEB_TOKEN_KEY); } catch { /* noop */ }
   memoryToken = null;
   memoryTokenExpiresAt = 0;
 }
@@ -58,11 +61,13 @@ function restoreWebToken() {
     clearWebToken();
   }
   try {
-    const saved = JSON.parse(sessionStorage.getItem(WEB_TOKEN_KEY) || 'null');
-    if (saved?.token && Number(saved.expiresAt) > Date.now()) {
-      memoryToken = saved.token;
-      memoryTokenExpiresAt = Number(saved.expiresAt);
-      return memoryToken;
+    for (const storage of [localStorage, sessionStorage]) {
+      const saved = JSON.parse(storage.getItem(WEB_TOKEN_KEY) || 'null');
+      if (saved?.token && Number(saved.expiresAt) > Date.now()) {
+        memoryToken = saved.token;
+        memoryTokenExpiresAt = Number(saved.expiresAt);
+        return memoryToken;
+      }
     }
   } catch { /* noop */ }
   clearWebToken();
@@ -157,15 +162,18 @@ export async function restoreGoogleToken(webClientId) {
   try {
     await initGoogle(webClientId);
     const SocialLogin = await getNativePlugin();
-    const status = await SocialLogin.isLoggedIn({ provider: 'google' });
-    if (!status?.isLoggedIn) return null;
+    // El proveedor conserva la cuenta en Android. refresh() renueva en silencio
+    // tanto el ID token como el access token vencido para Drive.
+    try { await SocialLogin.refresh({ provider: 'google', options: { scopes: [DRIVE_SCOPE] } }); }
+    catch {
+      const status = await SocialLogin.isLoggedIn({ provider: 'google' });
+      if (!status?.isLoggedIn) return null;
+    }
     const auth = await SocialLogin.getAuthorizationCode({ provider: 'google' });
     const token = tokenString(auth?.accessToken);
     if (token) memoryToken = token;
     return token;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 export async function disconnectGoogle() {

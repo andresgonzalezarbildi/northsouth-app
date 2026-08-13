@@ -16,6 +16,8 @@
   --yellow: #e3bd60;
   --white-belt: #e8e4d9;
   --shadow: 0 16px 42px rgba(0,0,0,.28);
+  --visual-viewport-height: 100dvh;
+  --visual-viewport-top: 0px;
 }
 
 * { box-sizing: border-box; }
@@ -521,4 +523,54 @@ img, svg, canvas { max-width: 100%; }
 .mobile-sync-status { display: none; border: 1px solid #323232; font: inherit; cursor: pointer; width: fit-content; max-width: 100%; }
 @media (max-width: 720px) {
   .mobile-sync-status { display: inline-flex; margin: -4px 0 12px; white-space: normal; text-align: left; }
+}
+
+/* --- North South v6.6: teclado móvil y ajustes plegables --- */
+.settings-accordion-grid { grid-template-columns: 1fr; }
+.settings-accordion { padding: 0; overflow: hidden; }
+.settings-summary {
+  width: 100%; min-height: 76px; padding: 15px 17px; border: 0; color: var(--text);
+  background: transparent; display: grid; grid-template-columns: 42px minmax(0,1fr) 28px;
+  align-items: center; gap: 12px; text-align: left;
+}
+.settings-summary:hover { background: rgba(255,255,255,.025); }
+.settings-summary-icon {
+  width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center;
+  background: #262626; color: #f06a74; font-size: 18px; font-weight: 900;
+}
+.settings-summary-copy { min-width: 0; display: grid; gap: 4px; }
+.settings-summary-copy strong { font-size: 15px; }
+.settings-summary-copy small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-chevron { color: var(--muted); font-size: 24px; line-height: 1; text-align: center; transition: transform .16s ease; }
+.settings-summary[aria-expanded="true"] .settings-chevron { transform: rotate(180deg); }
+.settings-body { padding: 2px 17px 17px; border-top: 1px solid #303030; }
+.settings-body[hidden] { display: none; }
+.settings-body > p:first-child { margin-top: 14px; }
+.settings-body .activity-head { justify-content: flex-end; margin-top: 14px; }
+.danger-zone .settings-summary-icon { color: #ff9da4; background: #32191d; }
+
+@media (max-width:720px) {
+  .modal-backdrop {
+    top: var(--visual-viewport-top); right: 0; bottom: auto; left: 0;
+    height: var(--visual-viewport-height);
+  }
+  .modal, .modal.wide {
+    max-height: calc(var(--visual-viewport-height) - 4px);
+    scroll-padding-block: 74px 140px;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  html.soft-keyboard-focus .mobile-nav { display: none; }
+  html.soft-keyboard-focus body { padding-bottom: 0; }
+  html.soft-keyboard-focus .modal, html.soft-keyboard-focus .modal.wide {
+    height: calc(var(--visual-viewport-height) - 2px);
+    max-height: calc(var(--visual-viewport-height) - 2px);
+    overflow-y: auto;
+  }
+  html.soft-keyboard-focus input,
+  html.soft-keyboard-focus textarea,
+  html.soft-keyboard-focus [contenteditable="true"] { scroll-margin-block: 90px 150px; }
+  .settings-summary { min-height: 70px; padding: 13px 14px; grid-template-columns: 38px minmax(0,1fr) 24px; gap: 10px; }
+  .settings-summary-icon { width: 38px; height: 38px; }
+  .settings-body { padding: 2px 14px 15px; }
 }

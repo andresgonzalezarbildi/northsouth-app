@@ -108,3 +108,25 @@ test('el estado de Drive también es visible en móvil', () => {
   assert.match(source, /mobile-sync-status sync-pill/);
   assert.match(source, /data-view="settings"/);
 });
+
+test('los buscadores actualizan resultados sin reconstruir el input activo', () => {
+  assert.match(source, /function updateVisibleSearch\(kind\)/);
+  assert.match(source, /updateVisibleSearch\('members'\)/);
+  assert.equal(source.includes("state.memberQuery=event.target.value;rerenderFocused"), false);
+});
+
+test('Ajustes usa secciones plegables', () => {
+  assert.match(source, /data-settings-toggle/);
+  assert.match(source, /Cuota mensual/);
+  assert.match(source, /settingsSection/);
+});
+
+test('el teclado móvil sigue el viewport visible', async () => {
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const android = await readFile(new URL('../scripts/configure-android.mjs', import.meta.url), 'utf8');
+  assert.match(source, /window\.visualViewport/);
+  assert.match(source, /soft-keyboard-focus/);
+  assert.match(css, /--visual-viewport-height/);
+  assert.match(css, /soft-keyboard-focus \.mobile-nav/);
+  assert.match(android, /windowSoftInputMode="adjustResize"/);
+});

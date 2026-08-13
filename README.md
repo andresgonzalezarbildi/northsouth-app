@@ -1,8 +1,17 @@
-# North South Academy — v6.2
+# North South Academy — v6.6
 
 Gestión de socios, cuotas, pagos y cantina. El mismo frontend sirve para web/PWA de escritorio y para Android mediante Capacitor.
 
-## Qué cambió en v6.2
+## Qué cambió en v6.6
+
+- La sesión local se guarda con una copia de recuperación y Android renueva automáticamente el acceso temporal de Google.
+- Los buscadores actualizan solamente sus resultados: el campo ya no se reconstruye y el teclado permanece abierto.
+- Los formularios y modales siguen el viewport visible del celular; la navegación inferior se oculta mientras está abierto el teclado.
+- Ajustes quedó organizado como una lista de botones desplegables.
+- La pantalla de carga Android usa el logo North South en todas las densidades y orientaciones.
+- `npm run android:apk` aplica automáticamente el splash, el icono, `adjustResize` y el parche de Google.
+
+## Base de sincronización incorporada en v6.2
 
 - Cada acción se guarda inmediatamente en el dispositivo y genera una operación con ID único.
 - Drive sincroniza esas operaciones como archivos independientes e inmutables, evitando que dos PCs pisen el mismo cambio al trabajar a la vez.
@@ -66,8 +75,6 @@ La app ya no trae socios ni pagos por defecto.
 3. Elegir el respaldo JSON privado correspondiente a esa cuenta.
 
 A partir de ahí esos datos pertenecen al almacenamiento de esa cuenta y luego pueden sincronizarse con su Drive.
-
-Si el navegador conserva datos creados con la versión 4, Ajustes muestra **Descargar datos de la versión anterior**. Se descargan y luego se importan en la cuenta correcta.
 
 ## Cómo funciona el guardado
 
@@ -143,14 +150,14 @@ Comandos:
 ```bash
 npm install
 npm run build
-npx cap add android
-npx cap sync
-npx cap open android
+npm run cap:add:android
+npm run android:apk
 ```
 
-`npx cap sync android` ejecuta automáticamente un hook que adapta `MainActivity.java`
+La sincronización de Capacitor ejecuta automáticamente un hook que adapta `MainActivity.java`
 para que `@capgo/capacitor-social-login` pueda solicitar scopes adicionales de Google
-(como `drive.appdata`). No hay que editar `MainActivity` a mano después de cada sync.
+(como `drive.appdata`). El comando de la APK también instala el icono, el logo de carga y
+la configuración `adjustResize`; no hay que editar Android a mano después de cada sync.
 
 Para Google en Android hay que crear además un OAuth Client ID de tipo Android con:
 
@@ -165,4 +172,4 @@ El Web Client ID sigue configurado en `.env`; no se escribe desde la app.
 npm test
 ```
 
-Actualmente: **55/55 tests pasando**.
+Actualmente: **59/59 tests pasando**.

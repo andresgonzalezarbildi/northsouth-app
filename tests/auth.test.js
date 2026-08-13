@@ -22,11 +22,19 @@ test('cerrar sesión elimina solamente la sesión de autenticación', () => {
   assert.equal(loadAuthSession(), null);
 });
 
+test('la sesión local conserva una copia de recuperación', () => {
+  saveAuthSession({ email:'respaldo@example.com', name:'Respaldo' });
+  localStorage.removeItem('northsouth:auth-session:v1');
+  assert.equal(loadAuthSession().email, 'respaldo@example.com');
+});
+
 test('la UI separa sesión local de autorización temporal de Drive', async () => {
   const source = await import('node:fs/promises').then(fs => fs.readFile(new URL('../src/google-auth.js', import.meta.url), 'utf8'));
   assert.match(source, /memoryTokenExpiresAt/);
   assert.match(source, /invalidateGoogleToken/);
   assert.match(source, /memoryTokenExpiresAt > Date\.now\(\)/);
+  assert.match(source, /localStorage\.setItem\(WEB_TOKEN_KEY/);
+  assert.match(source, /SocialLogin\.refresh/);
 });
 
 
@@ -35,7 +43,8 @@ test('Android conserva el parche nativo requerido para scopes adicionales de Goo
   const packageJson = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const patch = await fs.readFile(new URL('../scripts/patch-android-social-login.mjs', import.meta.url), 'utf8');
 
-  assert.equal(packageJson.scripts['capacitor:sync:after'], 'node scripts/patch-android-social-login.mjs');
+  assert.match(packageJson.scripts['capacitor:sync:after'], /patch-android-social-login\.mjs/);
+  assert.match(packageJson.scripts['android:apk'], /install-android-splash\.mjs/);
   assert.match(patch, /ModifiedMainActivityForSocialLoginPlugin/);
   assert.match(patch, /handleGoogleLoginIntent/);
   assert.match(patch, /REQUEST_AUTHORIZE_GOOGLE_MIN/);

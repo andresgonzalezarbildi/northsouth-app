@@ -19,7 +19,7 @@ import {
   normalizeText, nowISO, periodLabel, shortPeriodLabel, todayISO, uid
 } from './utils.js';
 
-const APP_VERSION = '6.5.0';
+const APP_VERSION = '6.6.0';
 const app = document.querySelector('#app');
 const AUTO_SYNC_MS = 30000;
 const DRIVE_LINK_PREFIX = 'northsouth:drive-linked:v1:';
@@ -35,6 +35,7 @@ const state = {
   paymentQuery: '', paymentMethod: 'all', paymentPeriod: 'all',
   feeQuery: '', feeWindowStart: addMonths(currentPeriod(), -1),
   cantinaQuery: '', cantinaProductFilter: 'active',
+  settingsSection: null,
   modal: null, toast: null, token: null,
   sync: {
     kind: navigator.onLine ? 'local' : 'offline',
@@ -66,6 +67,51 @@ const getProduct = id => live(state.data?.products).find(p => p.id === id);
 const clientId = () => GOOGLE_WEB_CLIENT_ID || '';
 const compactViewport = () => window.matchMedia?.('(max-width: 720px)').matches ?? window.innerWidth <= 720;
 const CLEAR_PHRASE = 'borrar datos northsouthjjm';
+
+function isKeyboardField(element) {
+  if (!element?.matches?.('input, textarea, [contenteditable="true"]')) return false;
+  if (element.matches('textarea, [contenteditable="true"]')) return true;
+  return !['button','checkbox','color','file','hidden','image','radio','range','reset','submit'].includes(String(element.type || 'text').toLowerCase());
+}
+
+function usesSoftKeyboardLayout() {
+  return Boolean(window.Capacitor?.isNativePlatform?.()) || window.matchMedia?.('(max-width: 1000px), (pointer: coarse)').matches;
+}
+
+function syncVisualViewport() {
+  const viewport = window.visualViewport;
+  const height = Math.max(180, Math.round(viewport?.height || window.innerHeight || document.documentElement.clientHeight));
+  const offsetTop = Math.max(0, Math.round(viewport?.offsetTop || 0));
+  document.documentElement.style.setProperty('--visual-viewport-height', `${height}px`);
+  document.documentElement.style.setProperty('--visual-viewport-top', `${offsetTop}px`);
+}
+
+function revealFocusedField(field) {
+  if (!isKeyboardField(field) || !document.contains(field)) return;
+  syncVisualViewport();
+  field.scrollIntoView({ behavior:'auto', block:'center', inline:'nearest' });
+}
+
+function keepFocusedFieldVisible(event) {
+  const field = event.target;
+  if (!usesSoftKeyboardLayout() || !isKeyboardField(field)) return;
+  document.documentElement.classList.add('soft-keyboard-focus');
+  [80, 220, 420].forEach(delay => setTimeout(() => revealFocusedField(field), delay));
+}
+
+function clearKeyboardFocusState() {
+  setTimeout(() => {
+    if (isKeyboardField(document.activeElement)) return;
+    document.documentElement.classList.remove('soft-keyboard-focus');
+    syncVisualViewport();
+  }, 180);
+}
+
+function handleVisualViewportChange() {
+  syncVisualViewport();
+  const field = document.activeElement;
+  if (usesSoftKeyboardLayout() && isKeyboardField(field)) requestAnimationFrame(() => revealFocusedField(field));
+}
 
 function driveLinkKey(email = state.account?.email) {
   return email ? `${DRIVE_LINK_PREFIX}${encodeURIComponent(String(email).trim().toLowerCase())}` : '';
@@ -517,34 +563,46 @@ function memberStatusLabel(member) {
   return { cls:'ok', text:'Al día' };
 }
 
-function renderMembers() {
-  const rows = live(state.data.members)
+function filteredMembers() {
+  return live(state.data.members)
     .filter(m => state.memberFilter === 'all' || m.status === state.memberFilter)
     .filter(m => !state.memberQuery || fuzzyMatch(`${memberName(m)} ${m.phone || ''}`, state.memberQuery))
     .sort((a,b) => memberName(a).localeCompare(memberName(b),'es'));
+}
+
+function renderMemberCards(rows = filteredMembers()) {
+  return rows.map(m => {
+    const badge = memberStatusLabel(m);
+    return `<div class="card member-card">
+      <button class="avatar avatar-button" data-action="member-detail" data-id="${m.id}">${initials(memberName(m))}</button>
+      <button class="row-main text-button" data-action="member-detail" data-id="${m.id}"><div class="row-title">${escapeHTML(memberName(m))}</div><div class="row-sub">Cuota ${money(memberFee(state.data,m,currentPeriod()))}${m.phone ? ` · ${escapeHTML(m.phone)}` : ''}</div></button>
+      <div class="member-actions"><span class="badge ${badge.cls}">${badge.text}</span>${m.status==='active'?`<button class="btn primary small" data-action="pay-member" data-id="${m.id}">Cobrar</button>`:''}</div>
+    </div>`;
+  }).join('') || '<div class="empty card full-span">No hay socios que coincidan con la búsqueda.</div>';
+}
+
+function renderMembers() {
   return `
     <div class="toolbar toolbar-balanced">
       <div class="search grow"><input id="member-search" value="${escapeHTML(state.memberQuery)}" placeholder="Buscar socio…" autocomplete="off"></div>
       <div class="filter-tabs">${[['active','Activos'],['inactive','Inactivos'],['all','Todos']].map(([v,l]) => `<button class="filter-tab ${state.memberFilter===v?'active':''}" data-member-filter="${v}">${l}</button>`).join('')}</div>
       <button class="btn" data-action="new-member">＋ Nuevo socio</button>
     </div>
-    <div class="member-grid">
-      ${rows.map(m => {
-        const badge = memberStatusLabel(m);
-        return `<div class="card member-card">
-          <button class="avatar avatar-button" data-action="member-detail" data-id="${m.id}">${initials(memberName(m))}</button>
-          <button class="row-main text-button" data-action="member-detail" data-id="${m.id}"><div class="row-title">${escapeHTML(memberName(m))}</div><div class="row-sub">Cuota ${money(memberFee(state.data,m,currentPeriod()))}${m.phone ? ` · ${escapeHTML(m.phone)}` : ''}</div></button>
-          <div class="member-actions"><span class="badge ${badge.cls}">${badge.text}</span>${m.status==='active'?`<button class="btn primary small" data-action="pay-member" data-id="${m.id}">Cobrar</button>`:''}</div>
-        </div>`;
-      }).join('') || '<div class="empty card full-span">No hay socios que coincidan con la búsqueda.</div>'}
-    </div>`;
+    <div class="member-grid" data-search-results="members">${renderMemberCards()}</div>`;
+}
+
+function filteredFeeMembers() {
+  return activeMembers(state.data)
+    .filter(m => !state.feeQuery || fuzzyMatch(memberName(m), state.feeQuery))
+    .sort((a,b) => memberName(a).localeCompare(memberName(b),'es'));
+}
+
+function renderFeeRows(periods, rows = filteredFeeMembers()) {
+  return rows.map(m => `<tr><td class="member-col"><button class="matrix-member" data-action="member-detail" data-id="${m.id}">${escapeHTML(memberName(m))}</button></td>${periods.map(p => renderFeeCell(m,p)).join('')}</tr>`).join('');
 }
 
 function renderFees() {
   const periods = Array.from({length:7}, (_,i) => addMonths(state.feeWindowStart, i));
-  const rows = activeMembers(state.data)
-    .filter(m => !state.feeQuery || fuzzyMatch(memberName(m), state.feeQuery))
-    .sort((a,b) => memberName(a).localeCompare(memberName(b),'es'));
   return `
     <div class="toolbar toolbar-balanced">
       <div class="search grow"><input id="fee-search" value="${escapeHTML(state.feeQuery)}" placeholder="Buscar socio…" autocomplete="off"></div>
@@ -555,7 +613,7 @@ function renderFees() {
       <div class="fees-scroll" data-scroll-key="fees-table">
         <table class="fees-table">
           <thead><tr><th class="member-col">Socio</th>${periods.map(p=>`<th class="${p===currentPeriod()?'current-month':''}">${shortPeriodLabel(p)}</th>`).join('')}</tr></thead>
-          <tbody>${rows.map(m => `<tr><td class="member-col"><button class="matrix-member" data-action="member-detail" data-id="${m.id}">${escapeHTML(memberName(m))}</button></td>${periods.map(p => renderFeeCell(m,p)).join('')}</tr>`).join('')}</tbody>
+          <tbody data-search-results="fees">${renderFeeRows(periods)}</tbody>
         </table>
       </div>
     </section>`;
@@ -571,8 +629,8 @@ function renderFeeCell(member, period) {
   return `<td><button class="fee-cell ${cls}" data-action="pay-member-period" data-id="${member.id}" data-period="${period}"><strong>${text}</strong>${s.paid>0?`<small>Pagó ${money(s.paid)}</small>`:''}</button></td>`;
 }
 
-function renderPayments() {
-  const rows = livePayments(state.data)
+function filteredPayments() {
+  return livePayments(state.data)
     .filter(p => state.paymentPeriod === 'all' || p.period === state.paymentPeriod)
     .filter(p => state.paymentMethod === 'all' || p.method === state.paymentMethod)
     .filter(p => {
@@ -581,6 +639,14 @@ function renderPayments() {
       return fuzzyMatch(`${m ? memberName(m) : ''} ${p.note || ''}`, state.paymentQuery);
     })
     .sort((a,b) => Date.parse(b.createdAt || b.updatedAt || 0) - Date.parse(a.createdAt || a.updatedAt || 0));
+}
+
+function renderPaymentRows(rows = filteredPayments()) {
+  return rows.map(p => { const m=getMember(p.memberId); return `<div class="row-card"><div class="avatar">${initials(m?memberName(m):'?')}</div><div class="row-main"><div class="row-title">${escapeHTML(m?memberName(m):(p.memberNameSnapshot||'Socio no disponible'))}</div><div class="row-sub">${shortPeriodLabel(p.period)} · cobro ${dateLabel(p.paidAt)} · agregado ${dateTimeLabel(p.createdAt)} · ${methodLabel(p.method)}${p.note&&p.note!=='Importado de la planilla original'?` · ${escapeHTML(p.note)}`:''}</div></div><div class="amount">${money(p.amount)}</div><div class="row-actions"><button class="btn small ghost" data-action="edit-payment" data-id="${p.id}">Editar</button><button class="btn small danger ghost-danger" data-action="delete-payment" data-id="${p.id}">Eliminar</button></div></div>`; }).join('') || '<div class="empty">No hay pagos para este filtro.</div>';
+}
+
+function renderPayments() {
+  const rows = filteredPayments();
   const total = rows.reduce((s,p)=>s+Number(p.amount||0),0);
   return `
     <div class="toolbar toolbar-balanced">
@@ -588,16 +654,24 @@ function renderPayments() {
       <select id="payment-period"><option value="all" ${state.paymentPeriod==='all'?'selected':''}>Todos los meses</option>${Array.from({length:15},(_,i)=>addMonths(currentPeriod(),i-10)).reverse().map(p=>`<option value="${p}" ${state.paymentPeriod===p?'selected':''}>${periodLabel(p)}</option>`).join('')}</select>
       <select id="payment-method-filter"><option value="all">Todos los medios</option>${[['cash','Efectivo'],['transfer','Transferencia'],['other','Otro'],['unknown','Sin especificar']].map(([v,l])=>`<option value="${v}" ${state.paymentMethod===v?'selected':''}>${l}</option>`).join('')}</select>
     </div>
-    <section class="card panel"><div class="panel-head"><div><div class="panel-title">Pagos registrados</div><div class="panel-subtitle">${rows.length} movimientos · ordenados por agregado</div></div><div class="amount">${money(total)}</div></div>
-      <div class="list">${rows.map(p => { const m=getMember(p.memberId); return `<div class="row-card"><div class="avatar">${initials(m?memberName(m):'?')}</div><div class="row-main"><div class="row-title">${escapeHTML(m?memberName(m):(p.memberNameSnapshot||'Socio no disponible'))}</div><div class="row-sub">${shortPeriodLabel(p.period)} · cobro ${dateLabel(p.paidAt)} · agregado ${dateTimeLabel(p.createdAt)} · ${methodLabel(p.method)}${p.note&&p.note!=='Importado de la planilla original'?` · ${escapeHTML(p.note)}`:''}</div></div><div class="amount">${money(p.amount)}</div><div class="row-actions"><button class="btn small ghost" data-action="edit-payment" data-id="${p.id}">Editar</button><button class="btn small danger ghost-danger" data-action="delete-payment" data-id="${p.id}">Eliminar</button></div></div>`; }).join('') || '<div class="empty">No hay pagos para este filtro.</div>'}</div>
+    <section class="card panel"><div class="panel-head"><div><div class="panel-title">Pagos registrados</div><div class="panel-subtitle" data-payment-count>${rows.length} movimientos · ordenados por agregado</div></div><div class="amount" data-payment-total>${money(total)}</div></div>
+      <div class="list" data-search-results="payments">${renderPaymentRows(rows)}</div>
     </section>`;
 }
 
-function renderCantina() {
-  const products = live(state.data.products)
+function filteredProducts() {
+  return live(state.data.products)
     .filter(p => state.cantinaProductFilter === 'all' || (state.cantinaProductFilter === 'active' ? p.active !== false : p.active === false))
     .filter(p => !state.cantinaQuery || fuzzyMatch(`${p.name} ${p.emoji}`, state.cantinaQuery))
     .sort((a,b) => Number(b.active !== false) - Number(a.active !== false) || a.name.localeCompare(b.name,'es'));
+}
+
+function renderProductCards(products = filteredProducts()) {
+  return products.map(p => `<div class="card product-card ${p.active===false?'product-inactive':''}"><div class="product-emoji">${escapeHTML(p.emoji || '🛒')}</div><div class="row-main"><div class="row-title">${escapeHTML(p.name)}</div><div class="row-sub">${p.price>0?money(p.price):'Precio al vender'}${p.active===false?' · Inactivo':''}</div></div><div class="product-actions"><button class="btn small ghost" data-action="edit-product" data-id="${p.id}">Editar</button>${p.active!==false?`<button class="btn cantina-btn small" data-action="sell-product" data-id="${p.id}">Vender</button>`:'<span class="badge inactive product-status-badge">Inactivo</span>'}</div></div>`).join('') || '<div class="empty card full-span">No hay productos para este filtro.</div>';
+}
+
+function renderCantina() {
+  const products = filteredProducts();
   const month = cantinaSummary(state.data, currentPeriod());
   const top = getProduct(month.topProductId);
   const sales = liveSales(state.data).slice().sort((a,b)=>Date.parse(b.createdAt||b.updatedAt||0)-Date.parse(a.createdAt||a.updatedAt||0)).slice(0,12);
@@ -608,8 +682,20 @@ function renderCantina() {
       <div class="card cantina-stat"><span>${escapeHTML(top?.emoji || '⭐')}</span><div><small>Más vendido</small><strong>${escapeHTML(top?.name || '—')}</strong></div></div>
     </div>
     <div class="toolbar toolbar-balanced"><div class="search grow"><input id="cantina-search" value="${escapeHTML(state.cantinaQuery)}" placeholder="Buscar producto…"></div><div class="filter-tabs">${[['active','Activos'],['inactive','Inactivos'],['all','Todos']].map(([v,l])=>`<button class="filter-tab ${state.cantinaProductFilter===v?'active':''}" data-product-filter="${v}">${l}</button>`).join('')}</div><button class="btn" data-action="new-product">＋ Producto</button></div>
-    <div class="product-grid">${products.map(p => `<div class="card product-card ${p.active===false?'product-inactive':''}"><div class="product-emoji">${escapeHTML(p.emoji || '🛒')}</div><div class="row-main"><div class="row-title">${escapeHTML(p.name)}</div><div class="row-sub">${p.price>0?money(p.price):'Precio al vender'}${p.active===false?' · Inactivo':''}</div></div><div class="product-actions"><button class="btn small ghost" data-action="edit-product" data-id="${p.id}">Editar</button>${p.active!==false?`<button class="btn cantina-btn small" data-action="sell-product" data-id="${p.id}">Vender</button>`:'<span class="badge inactive product-status-badge">Inactivo</span>'}</div></div>`).join('') || '<div class="empty card full-span">No hay productos para este filtro.</div>'}</div>
+    <div class="product-grid" data-search-results="cantina">${renderProductCards(products)}</div>
     <section class="card panel cantina-history"><div class="panel-head"><div><div class="panel-title">Últimas ventas</div><div class="panel-subtitle">Ordenadas por cuándo las agregaste</div></div></div><div class="list">${sales.map(s=>{const m=getMember(s.memberId),p=getProduct(s.productId),buyer=m?memberName(m):s.memberId?'Socio no disponible':'Venta sin socio';return `<div class="row-card"><div class="movement-icon sale">${escapeHTML(p?.emoji||s.productEmoji||'☕')}</div><div class="row-main"><div class="row-title">${escapeHTML(buyer)} · ${escapeHTML(p?.name||s.productName||'Producto')}</div><div class="row-sub">${Number(s.quantity||1)} × ${money(s.unitPrice)} · ${dateLabel(s.soldAt)} · agregado ${dateTimeLabel(s.createdAt)}</div></div><div class="amount">${money(s.amount)}</div><button class="btn small ghost" data-action="edit-sale" data-id="${s.id}">Editar</button></div>`}).join('')||'<div class="empty">Todavía no hay ventas.</div>'}</div></section>`;
+}
+
+function settingsPanel(id, title, subtitle, icon, body, { danger = false, wide = false } = {}) {
+  const open = state.settingsSection === id;
+  return `<section class="card settings-card settings-accordion ${danger?'danger-zone':''} ${wide?'settings-wide':''}">
+    <button type="button" class="settings-summary" data-settings-toggle="${id}" aria-expanded="${open}">
+      <span class="settings-summary-icon">${icon}</span>
+      <span class="settings-summary-copy"><strong>${escapeHTML(title)}</strong><small>${escapeHTML(subtitle)}</small></span>
+      <span class="settings-chevron">⌄</span>
+    </button>
+    <div class="settings-body" ${open?'':'hidden'}>${body}</div>
+  </section>`;
 }
 
 function renderSettings() {
@@ -620,22 +706,35 @@ function renderSettings() {
   const pending = pendingOperationCount();
   const driveButton = state.syncing ? 'Sincronizando…' : state.token ? 'Sincronizar ahora' : state.driveLinked ? 'Renovar acceso a Drive' : 'Conectar Drive';
   const lastSync = state.sync.lastAt ? `Última sincronización correcta: ${syncClock(state.sync.lastAt)}` : 'Todavía no hubo una sincronización correcta en esta sesión.';
-  return `<div class="settings-grid">
-    <section class="card settings-card"><h3>Cuota general</h3><p>Los meses anteriores conservan el valor que tenían.</p><form id="fee-form" class="form-grid compact-form"><div class="field"><label>Nueva cuota</label><input name="defaultFee" type="number" min="1" step="1" value="${Number(state.data.settings.defaultFee)}"></div><div class="field"><label>Rige desde</label><input name="effectiveFrom" type="month" value="${currentPeriod()}"></div><div class="field full"><button class="btn primary" type="submit">Guardar cuota</button></div></form></section>
-    <section class="card settings-card"><h3>Sincronización con Drive</h3><p>Todo se guarda primero en este equipo. Con Drive autorizado, se sincroniza después de cada cambio, cada 30 segundos y al volver a esta pestaña.</p><div class="sync-settings"><div><span class="sync-pill ${state.sync.kind}"><span class="sync-dot"></span>${escapeHTML(state.sync.text)}</span><small>${escapeHTML(state.account.email)}</small><small>${escapeHTML(lastSync)}</small>${state.sync.lastError?`<small class="sync-error-detail">${escapeHTML(state.sync.lastError)}</small>`:''}</div><div class="settings-actions"><button class="btn primary" data-action="sync-drive" ${driveReady&&!state.syncing?'':'disabled'}>${driveButton}</button></div></div>${!driveReady?'<small class="settings-note">Google se configura en .env, no dentro de la aplicación.</small>':''}</section>
-    <section class="card settings-card"><h3>Datos y respaldo</h3><p>Podés descargar una copia o importar un respaldo de North South.</p><div class="settings-actions"><button class="btn" data-action="export-backup">Descargar respaldo</button><label class="btn ghost" for="backup-file">Importar respaldo</label><input id="backup-file" type="file" accept="application/json,.json" hidden></div></section>
-    <section class="card settings-card"><h3>Cuenta</h3><div class="account-card"><div><strong>${escapeHTML(state.account.name || state.account.email)}</strong><small>${escapeHTML(state.account.email)}</small></div><button class="btn ghost" data-action="logout">Cerrar sesión</button></div></section>
-    <section class="card settings-card"><h3>Datos</h3><div class="detail-grid"><div class="detail-stat"><span>Socios</span><strong>${live(state.data.members).length}</strong></div><div class="detail-stat"><span>Activos</span><strong>${activeMembers(state.data).length}</strong></div><div class="detail-stat"><span>Pagos importados</span><strong>${imported}</strong></div><div class="detail-stat"><span>Ventas cantina</span><strong>${liveSales(state.data).length}</strong></div></div><small class="settings-note">Versión ${APP_VERSION} · almacenamiento local ${state.storageOK?'activo':'con problema'}</small></section>
-    <section class="card settings-card danger-zone"><h3>Borrar todos los datos</h3><p>Vacía socios, pagos, cantina y el registro de cambios de esta cuenta, también en Drive. Requiere una confirmación escrita.</p><button class="btn danger" data-action="open-clear-data">Borrar todos los datos</button></section>
-    <section class="card settings-card settings-wide"><div class="activity-head"><div><h3>Registro de cambios</h3><p>Cada acción se guarda primero acá y después se copia a Drive como una operación independiente.</p></div><span class="badge ${pending?'warn':'ok'}">${pending?`${pending} pendiente${pending===1?'':'s'}`:'Todo sincronizado'}</span></div><div class="activity-log">${activity.map(op=>{const synced=state.syncedOperationIds.has(op.id);const own=op.deviceId===deviceId;return `<div class="activity-row"><div class="activity-mark ${synced?'synced':'pending'}"></div><div class="row-main"><div class="row-title">${escapeHTML(op.label)}</div><div class="row-sub">${dateTimeLabel(op.createdAt)} · ${own?'este equipo':'otro equipo'} · ${op.type==='reset'?'borrado total':`${op.changes?.length||0} cambio${op.changes?.length===1?'':'s'}`}</div></div><span class="activity-status ${synced?'synced':'pending'}">${synced?'En Drive':'Local'}</span></div>`}).join('')||'<div class="empty">Todavía no hay cambios registrados en esta versión.</div>'}</div></section>
+  const feeBody = `<p>Los meses anteriores conservan el valor que tenían.</p><form id="fee-form" class="form-grid compact-form"><div class="field"><label>Nueva cuota</label><input name="defaultFee" type="number" min="1" step="1" value="${Number(state.data.settings.defaultFee)}"></div><div class="field"><label>Rige desde</label><input name="effectiveFrom" type="month" value="${currentPeriod()}"></div><div class="field full"><button class="btn primary" type="submit">Guardar cuota</button></div></form>`;
+  const driveBody = `<p>Todo se guarda primero en este equipo. Con Drive autorizado, se sincroniza después de cada cambio, cada 30 segundos y al volver a esta pestaña.</p><div class="sync-settings"><div><span class="sync-pill ${state.sync.kind}"><span class="sync-dot"></span>${escapeHTML(state.sync.text)}</span><small>${escapeHTML(state.account.email)}</small><small>${escapeHTML(lastSync)}</small>${state.sync.lastError?`<small class="sync-error-detail">${escapeHTML(state.sync.lastError)}</small>`:''}</div><div class="settings-actions"><button class="btn primary" data-action="sync-drive" ${driveReady&&!state.syncing?'':'disabled'}>${driveButton}</button></div></div>${!driveReady?'<small class="settings-note">Google se configura en .env, no dentro de la aplicación.</small>':''}`;
+  const backupBody = `<p>Podés descargar una copia o importar un respaldo de North South.</p><div class="settings-actions"><button class="btn" data-action="export-backup">Descargar respaldo</button><label class="btn ghost" for="backup-file">Importar respaldo</label><input id="backup-file" type="file" accept="application/json,.json" hidden></div>`;
+  const accountBody = `<div class="account-card"><div><strong>${escapeHTML(state.account.name || state.account.email)}</strong><small>${escapeHTML(state.account.email)}</small></div><button class="btn ghost" data-action="logout">Cerrar sesión</button></div>`;
+  const dataBody = `<div class="detail-grid"><div class="detail-stat"><span>Socios</span><strong>${live(state.data.members).length}</strong></div><div class="detail-stat"><span>Activos</span><strong>${activeMembers(state.data).length}</strong></div><div class="detail-stat"><span>Pagos importados</span><strong>${imported}</strong></div><div class="detail-stat"><span>Ventas cantina</span><strong>${liveSales(state.data).length}</strong></div></div><small class="settings-note">Versión ${APP_VERSION} · almacenamiento local ${state.storageOK?'activo':'con problema'}</small>`;
+  const clearBody = `<p>Vacía socios, pagos, cantina y el registro de cambios de esta cuenta, también en Drive. Requiere una confirmación escrita.</p><button class="btn danger" data-action="open-clear-data">Borrar todos los datos</button>`;
+  const activityBody = `<div class="activity-head"><span class="badge ${pending?'warn':'ok'}">${pending?`${pending} pendiente${pending===1?'':'s'}`:'Todo sincronizado'}</span></div><p>Cada acción se guarda primero acá y después se copia a Drive como una operación independiente.</p><div class="activity-log">${activity.map(op=>{const synced=state.syncedOperationIds.has(op.id);const own=op.deviceId===deviceId;return `<div class="activity-row"><div class="activity-mark ${synced?'synced':'pending'}"></div><div class="row-main"><div class="row-title">${escapeHTML(op.label)}</div><div class="row-sub">${dateTimeLabel(op.createdAt)} · ${own?'este equipo':'otro equipo'} · ${op.type==='reset'?'borrado total':`${op.changes?.length||0} cambio${op.changes?.length===1?'':'s'}`}</div></div><span class="activity-status ${synced?'synced':'pending'}">${synced?'En Drive':'Local'}</span></div>`}).join('')||'<div class="empty">Todavía no hay cambios registrados en esta versión.</div>'}</div>`;
+
+  return `<div class="settings-grid settings-accordion-grid">
+    ${settingsPanel('fee','Cuota mensual',`Cuota actual: ${money(state.data.settings.defaultFee)}`,'$ ',feeBody)}
+    ${settingsPanel('drive','Sincronización con Drive',state.sync.text,'↻',driveBody)}
+    ${settingsPanel('backup','Datos y respaldo','Descargar o importar una copia','⇅',backupBody)}
+    ${settingsPanel('account','Cuenta',state.account.email,'●',accountBody)}
+    ${settingsPanel('data','Resumen de datos',`${live(state.data.members).length} socios · ${liveSales(state.data).length} ventas`,'▦',dataBody)}
+    ${settingsPanel('activity','Registro de cambios',pending?`${pending} pendiente${pending===1?'':'s'}`:'Todo sincronizado','≡',activityBody,{wide:true})}
+    ${settingsPanel('clear','Borrar todos los datos','Zona de riesgo','!',clearBody,{danger:true,wide:true})}
   </div>`;
+}
+
+function renderMemberSuggestions(draft) {
+  const suggestions = findMembers(state.data, draft.memberQuery || '', { includeInactive:false, limit:7 });
+  return suggestions.map(m=>`<button type="button" data-action="pick-member" data-picker="${draft.pickerType}" data-id="${m.id}"><span class="avatar tiny">${initials(memberName(m))}</span><span>${escapeHTML(memberName(m))}</span></button>`).join('') || '<div class="picker-empty">No encontré socios.</div>';
 }
 
 function renderMemberPicker(draft, pickerType) {
   const optional = pickerType === 'sale';
-  const suggestions = findMembers(state.data, draft.memberQuery || '', { includeInactive:false, limit:7 });
   const chosen = getMember(draft.memberId);
-  return `<div class="field full member-picker"><label>Socio${optional?' <span class="muted-inline">(opcional)</span>':''}</label><input id="${pickerType}-member-search" data-member-picker="${pickerType}" value="${escapeHTML(draft.memberQuery || (chosen?memberName(chosen):''))}" placeholder="${optional?'Dejá vacío para venta sin socio':'Escribí el nombre…'}" autocomplete="off" ${optional?'':'required'}><input type="hidden" name="memberId" value="${escapeHTML(draft.memberId || '')}"><div class="picker-results ${draft.memberPickerOpen?'open':''}">${suggestions.map(m=>`<button type="button" data-action="pick-member" data-picker="${pickerType}" data-id="${m.id}"><span class="avatar tiny">${initials(memberName(m))}</span><span>${escapeHTML(memberName(m))}</span></button>`).join('') || '<div class="picker-empty">No encontré socios.</div>'}</div></div>`;
+  const suggestionDraft = { ...draft, pickerType };
+  return `<div class="field full member-picker"><label>Socio${optional?' <span class="muted-inline">(opcional)</span>':''}</label><input id="${pickerType}-member-search" data-member-picker="${pickerType}" value="${escapeHTML(draft.memberQuery || (chosen?memberName(chosen):''))}" placeholder="${optional?'Dejá vacío para venta sin socio':'Escribí el nombre…'}" autocomplete="off" ${optional?'':'required'}><input type="hidden" name="memberId" value="${escapeHTML(draft.memberId || '')}"><div class="picker-results ${draft.memberPickerOpen?'open':''}">${renderMemberSuggestions(suggestionDraft)}</div></div>`;
 }
 
 function paymentDue(member, period, months, editingId = null) {
@@ -764,6 +863,8 @@ function restoreScrollState(snapshot) {
 }
 
 function render({ preserveScroll = true } = {}) {
+  const activeSearch = document.activeElement?.matches?.('#member-search, #payment-search, #fee-search, #cantina-search, [data-member-picker]');
+  if (preserveScroll && activeSearch) return;
   const scrollState = preserveScroll ? captureScrollState() : { windowY:0, containers:{} };
   if (!state.account || !state.data) { app.innerHTML = renderLogin(); return; }
   if (state.view === 'fees' && compactViewport()) state.view = 'payments';
@@ -797,9 +898,36 @@ function openProduct(product=null) {
   render();
 }
 
-function rerenderFocused(id, caret=null) {
-  render();
-  requestAnimationFrame(()=>{const el=document.getElementById(id);if(el){el.focus();if(caret!=null&&el.setSelectionRange)el.setSelectionRange(caret,caret);}});
+function updateVisibleSearch(kind) {
+  const target = document.querySelector(`[data-search-results="${kind}"]`);
+  if (!target) return;
+  if (kind === 'members') target.innerHTML = renderMemberCards();
+  if (kind === 'fees') {
+    const periods = Array.from({length:7}, (_,i) => addMonths(state.feeWindowStart, i));
+    target.innerHTML = renderFeeRows(periods);
+  }
+  if (kind === 'payments') {
+    const rows = filteredPayments();
+    target.innerHTML = renderPaymentRows(rows);
+    const count = document.querySelector('[data-payment-count]');
+    const total = document.querySelector('[data-payment-total]');
+    if (count) count.textContent = `${rows.length} movimientos · ordenados por agregado`;
+    if (total) total.textContent = money(rows.reduce((sum,row)=>sum+Number(row.amount||0),0));
+  }
+  if (kind === 'cantina') target.innerHTML = renderProductCards();
+}
+
+function updateMemberPicker(pickerType) {
+  if (!state.modal?.draft) return;
+  const input = document.getElementById(`${pickerType}-member-search`);
+  const wrapper = input?.closest('.member-picker');
+  const hidden = wrapper?.querySelector('input[type="hidden"][name="memberId"]');
+  const results = wrapper?.querySelector('.picker-results');
+  if (hidden) hidden.value = '';
+  if (results) {
+    results.innerHTML = renderMemberSuggestions({ ...state.modal.draft, pickerType });
+    results.classList.add('open');
+  }
 }
 
 function refreshPaymentAuto({resetAmount=true}={}) {
@@ -813,6 +941,8 @@ function refreshPaymentAuto({resetAmount=true}={}) {
 app.addEventListener('click', async event => {
   if(event.target.matches('[data-modal-backdrop]')){const restore=state.modal?.type==='member-detail'?state.memberListScrollY:null;state.modal=null;render();if(restore!=null)requestAnimationFrame(()=>window.scrollTo(0,restore));return;}
   const viewEl=event.target.closest('[data-view]'); if(viewEl){navigate(viewEl.dataset.view);return;}
+  const settingsToggle=event.target.closest('[data-settings-toggle]');
+  if(settingsToggle){const section=settingsToggle.dataset.settingsToggle;state.settingsSection=state.settingsSection===section?null:section;render();return;}
   const actionEl=event.target.closest('[data-action]'); if(!actionEl)return;
   const action=actionEl.dataset.action,id=actionEl.dataset.id;
   if(action==='login-google'){await loginWithGoogle();return;}
@@ -881,12 +1011,12 @@ app.addEventListener('click', event => {
 });
 
 app.addEventListener('input', event => {
-  const id=event.target.id, caret=event.target.selectionStart;
-  if(id==='member-search'){state.memberQuery=event.target.value;rerenderFocused(id,caret);return;}
-  if(id==='payment-search'){state.paymentQuery=event.target.value;rerenderFocused(id,caret);return;}
-  if(id==='fee-search'){state.feeQuery=event.target.value;rerenderFocused(id,caret);return;}
-  if(id==='cantina-search'){state.cantinaQuery=event.target.value;rerenderFocused(id,caret);return;}
-  if(event.target.dataset.memberPicker&&state.modal){state.modal.draft.memberQuery=event.target.value;state.modal.draft.memberId='';state.modal.draft.memberPickerOpen=true;rerenderFocused(id,caret);return;}
+  const id=event.target.id;
+  if(id==='member-search'){state.memberQuery=event.target.value;updateVisibleSearch('members');return;}
+  if(id==='payment-search'){state.paymentQuery=event.target.value;updateVisibleSearch('payments');return;}
+  if(id==='fee-search'){state.feeQuery=event.target.value;updateVisibleSearch('fees');return;}
+  if(id==='cantina-search'){state.cantinaQuery=event.target.value;updateVisibleSearch('cantina');return;}
+  if(event.target.dataset.memberPicker&&state.modal){const pickerType=event.target.dataset.memberPicker;state.modal.draft.memberQuery=event.target.value;state.modal.draft.memberId='';state.modal.draft.memberPickerOpen=true;updateMemberPicker(pickerType);return;}
   if(id==='payment-amount'&&state.modal?.type==='payment'){
     state.modal.draft.amount=event.target.value;
     const entered=Number(event.target.value||0),member=getMember(state.modal.draft.memberId),months=state.modal.id?1:Number(state.modal.draft.months||1);
@@ -994,12 +1124,18 @@ app.addEventListener('submit', event => {
 });
 
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&state.modal){state.modal=null;render();}});
+document.addEventListener('focusin',keepFocusedFieldVisible);
+document.addEventListener('focusout',clearKeyboardFocusState);
+window.visualViewport?.addEventListener('resize',handleVisualViewportChange);
+window.visualViewport?.addEventListener('scroll',handleVisualViewportChange);
+window.addEventListener('orientationchange',()=>setTimeout(handleVisualViewportChange,120));
 window.addEventListener('online',()=>{state.sync={...state.sync,kind:state.token?'pending':state.driveLinked?'auth':'local',text:state.token?'Conexión recuperada · comprobando Drive':state.driveLinked?'Conexión recuperada · Drive requiere autorización':'Conexión recuperada · guardado local'};render();scheduleSync();});
 window.addEventListener('offline',()=>{const pending=pendingOperationCount();state.sync={...state.sync,kind:'offline',text:pending?`Sin conexión · ${pending} cambio${pending===1?'':'s'} local${pending===1?'':'es'}`:'Sin conexión · datos guardados localmente'};render();});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')scheduleSync();});
 window.addEventListener('focus',()=>scheduleSync());
 
 window.addEventListener('resize',()=>{if(state.view==='fees'&&compactViewport())navigate('payments');});
+syncVisualViewport();
 
 if(import.meta.env?.DEV && 'serviceWorker' in navigator){
   // Evita que una PWA vieja instalada en localhost siga sirviendo JS anterior durante desarrollo.
