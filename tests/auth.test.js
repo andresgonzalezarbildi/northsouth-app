@@ -28,3 +28,15 @@ test('la UI separa sesión local de autorización temporal de Drive', async () =
   assert.match(source, /invalidateGoogleToken/);
   assert.match(source, /memoryTokenExpiresAt > Date\.now\(\)/);
 });
+
+
+test('Android conserva el parche nativo requerido para scopes adicionales de Google', async () => {
+  const fs = await import('node:fs/promises');
+  const packageJson = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const patch = await fs.readFile(new URL('../scripts/patch-android-social-login.mjs', import.meta.url), 'utf8');
+
+  assert.equal(packageJson.scripts['capacitor:sync:after'], 'node scripts/patch-android-social-login.mjs');
+  assert.match(patch, /ModifiedMainActivityForSocialLoginPlugin/);
+  assert.match(patch, /handleGoogleLoginIntent/);
+  assert.match(patch, /REQUEST_AUTHORIZE_GOOGLE_MIN/);
+});

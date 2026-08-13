@@ -8,9 +8,13 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --test",
-    "cap:add:android": "npm run build && npx cap add android",
+    "cap:add:android": "npm run build && npx cap add android && node scripts/patch-android-social-login.mjs",
     "cap:sync": "npm run build && npx cap sync",
-    "cap:open:android": "npx cap open android"
+    "cap:open:android": "npx cap open android",
+    "capacitor:sync:after": "node scripts/patch-android-social-login.mjs",
+    "android:apk": "npm run build && npx cap sync android && node scripts/patch-android-social-login.mjs && node scripts/install-android-icons.mjs && node scripts/build-android-apk.mjs",
+    "android:icons": "node scripts/install-android-icons.mjs",
+    "android:oauth-info": "node scripts/google-android-oauth-info.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

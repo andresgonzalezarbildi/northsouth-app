@@ -142,7 +142,7 @@ export async function connectGoogle(webClientId, { selectAccount = true, loginHi
   const SocialLogin = await getNativePlugin();
   const res = await SocialLogin.login({
     provider: 'google',
-    options: { scopes: ['openid', 'email', 'profile', DRIVE_SCOPE] }
+    options: { scopes: [DRIVE_SCOPE], filterByAuthorizedAccounts: false }
   });
   const token = tokenString(res?.result?.accessToken);
   if (!token) throw new Error('Google no devolvió un token con acceso a Drive.');

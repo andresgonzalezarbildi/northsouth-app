@@ -135,7 +135,7 @@ En localhost no es necesario instalarla: se usa `npm run dev` o `ABRIR-APP-LOCAL
 El package configurado es:
 
 ```text
-uy.com.northsouth.academy
+com.northsouthjjm.app
 ```
 
 Comandos:
@@ -148,9 +148,13 @@ npx cap sync
 npx cap open android
 ```
 
+`npx cap sync android` ejecuta automáticamente un hook que adapta `MainActivity.java`
+para que `@capgo/capacitor-social-login` pueda solicitar scopes adicionales de Google
+(como `drive.appdata`). No hay que editar `MainActivity` a mano después de cada sync.
+
 Para Google en Android hay que crear además un OAuth Client ID de tipo Android con:
 
-- package: `uy.com.northsouth.academy`
+- package: `com.northsouthjjm.app`
 - SHA-1 de la firma usada para el APK
 
 El Web Client ID sigue configurado en `.env`; no se escribe desde la app.
@@ -161,4 +165,4 @@ El Web Client ID sigue configurado en `.env`; no se escribe desde la app.
 npm test
 ```
 
-Actualmente: **36/36 tests pasando**.
+Actualmente: **55/55 tests pasando**.
