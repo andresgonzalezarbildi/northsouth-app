@@ -19,7 +19,7 @@ import {
   normalizeText, nowISO, periodLabel, shortPeriodLabel, todayISO, uid
 } from './utils.js';
 
-const APP_VERSION = '6.6.0';
+const APP_VERSION = '6.6.1';
 const app = document.querySelector('#app');
 const AUTO_SYNC_MS = 30000;
 const DRIVE_LINK_PREFIX = 'northsouth:drive-linked:v1:';

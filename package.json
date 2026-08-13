@@ -1,7 +1,7 @@
 {
   "name": "north-south-academy-manager",
   "private": true,
-  "version": "6.6.0",
+  "version": "6.6.1",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -9,7 +9,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --test",
     "cap:add:android": "npm run build && npx cap add android && node scripts/install-android-splash.mjs && node scripts/configure-android.mjs && node scripts/patch-android-social-login.mjs",
-    "cap:sync": "npm run build && npx cap sync && node scripts/configure-android.mjs && node scripts/patch-android-social-login.mjs",
+    "cap:sync": "npm run build && npx cap sync && node scripts/install-android-splash.mjs && node scripts/configure-android.mjs && node scripts/patch-android-social-login.mjs",
     "cap:open:android": "npx cap open android",
     "capacitor:sync:after": "node scripts/install-android-splash.mjs && node scripts/configure-android.mjs && node scripts/patch-android-social-login.mjs",
     "android:splash": "node scripts/install-android-splash.mjs",

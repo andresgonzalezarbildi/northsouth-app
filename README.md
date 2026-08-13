@@ -1,6 +1,11 @@
-# North South Academy — v6.6
+# North South Academy — v6.6.1
 
 Gestión de socios, cuotas, pagos y cantina. El mismo frontend sirve para web/PWA de escritorio y para Android mediante Capacitor.
+
+## Qué cambió en v6.6.1
+
+- La aplicación vuelve a desplazarse verticalmente en Android y web móvil, incluso después de abrir o cerrar el teclado.
+- La pantalla de carga usa el logo HD de 1024 × 1024 centrado en un área cuadrada fija; Android ya no lo estira para completar la pantalla.
 
 ## Qué cambió en v6.6
 
@@ -8,7 +13,7 @@ Gestión de socios, cuotas, pagos y cantina. El mismo frontend sirve para web/PW
 - Los buscadores actualizan solamente sus resultados: el campo ya no se reconstruye y el teclado permanece abierto.
 - Los formularios y modales siguen el viewport visible del celular; la navegación inferior se oculta mientras está abierto el teclado.
 - Ajustes quedó organizado como una lista de botones desplegables.
-- La pantalla de carga Android usa el logo North South en todas las densidades y orientaciones.
+- La pantalla de carga Android usa el logo North South.
 - `npm run android:apk` aplica automáticamente el splash, el icono, `adjustResize` y el parche de Google.
 
 ## Base de sincronización incorporada en v6.2

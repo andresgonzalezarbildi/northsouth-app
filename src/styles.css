@@ -21,7 +21,22 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #app { min-height: 100%; margin: 0; }
+html {
+  min-height: 100%;
+  height: auto;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+body, #app {
+  min-height: 100vh;
+  height: auto;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: visible;
+}
 body {
   min-height: 100vh;
   background:
@@ -29,13 +44,13 @@ body {
     radial-gradient(circle at 0% 75%, rgba(255,255,255,.045), transparent 24rem),
     #111;
   color: var(--text);
-  overscroll-behavior-y: none;
+  touch-action: pan-y;
 }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 a { color: inherit; }
 
-.app-shell { min-height: 100vh; display: grid; grid-template-columns: 238px minmax(0,1fr); }
+.app-shell { min-height: 100vh; height: auto; display: grid; grid-template-columns: 238px minmax(0,1fr); overflow: visible; }
 .sidebar {
   position: sticky; top: 0; height: 100vh; padding: 20px 14px;
   background: rgba(14,14,14,.94); border-right: 1px solid #292929;
@@ -56,7 +71,7 @@ a { color: inherit; }
 .nav-icon { width: 22px; text-align: center; }
 .sidebar-foot { margin-top: auto; color: #8f8a82; font-size: 11px; padding: 6px; line-height: 1.45; }
 
-.main { min-width: 0; padding: 22px clamp(18px, 3vw, 42px) 48px; position: relative; isolation: isolate; }
+.main { min-width: 0; min-height: 100vh; height: auto; padding: 22px clamp(18px, 3vw, 42px) 48px; position: relative; isolation: isolate; overflow: visible; touch-action: pan-y; }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
 .topbar-left h1 { margin: 0; font-size: clamp(24px, 3vw, 34px); font-family: Impact, "Arial Black", sans-serif; letter-spacing: 1px; font-weight: 500; }
 .topbar-left p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
@@ -194,10 +209,11 @@ textarea { resize: vertical; min-height: 86px; }
 }
 
 @media (max-width: 720px) {
-  body { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
-  .app-shell { display: block; }
+  html { overflow-y: auto; }
+  body { padding-bottom: calc(96px + env(safe-area-inset-bottom)); overflow-y: visible; }
+  .app-shell { display: block; min-height: 100dvh; }
   .sidebar { display: none; }
-  .main { padding: 14px 13px 32px; }
+  .main { min-height: 100dvh; padding: 14px 13px 32px; overflow: visible; }
   .mobile-brand { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
   .mobile-brand img { width: 39px; height: 39px; border-radius: 50%; }
   .mobile-brand strong { font-family: Impact, "Arial Black", sans-serif; letter-spacing: .6px; }
@@ -561,7 +577,8 @@ img, svg, canvas { max-width: 100%; }
     -webkit-overflow-scrolling: touch;
   }
   html.soft-keyboard-focus .mobile-nav { display: none; }
-  html.soft-keyboard-focus body { padding-bottom: 0; }
+  html.soft-keyboard-focus { overflow-y: auto; }
+  html.soft-keyboard-focus body { padding-bottom: 0; overflow-y: visible; }
   html.soft-keyboard-focus .modal, html.soft-keyboard-focus .modal.wide {
     height: calc(var(--visual-viewport-height) - 2px);
     max-height: calc(var(--visual-viewport-height) - 2px);

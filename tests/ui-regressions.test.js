@@ -130,3 +130,21 @@ test('el teclado móvil sigue el viewport visible', async () => {
   assert.match(css, /soft-keyboard-focus \.mobile-nav/);
   assert.match(android, /windowSoftInputMode="adjustResize"/);
 });
+
+test('la vista móvil conserva el scroll vertical del documento', async () => {
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /html \{[\s\S]*overflow-y: auto/);
+  assert.match(css, /body, #app \{[\s\S]*height: auto/);
+  assert.match(css, /touch-action: pan-y/);
+  assert.equal(css.includes('overscroll-behavior-y: none'), false);
+});
+
+test('el splash Android usa el logo HD centrado en vez de un fondo estirado', async () => {
+  const splash = await readFile(new URL('../scripts/install-android-splash.mjs', import.meta.url), 'utf8');
+  assert.match(splash, /resources\/icon\.png/);
+  assert.match(splash, /android:width="280dp"/);
+  assert.match(splash, /android:height="280dp"/);
+  assert.match(splash, /android:gravity="center"/);
+  assert.match(splash, /windowSplashScreenAnimatedIcon/);
+  assert.match(splash, /fs\.rmSync\(stretchedSplash\)/);
+});
