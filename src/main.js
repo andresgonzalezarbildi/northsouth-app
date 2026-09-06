@@ -11,15 +11,15 @@ import { GOOGLE_WEB_CLIENT_ID } from './app-config.js';
 import { loadAuthSession, saveAuthSession, clearAuthSession, normalizeEmail } from './session.js';
 import {
   activeMembers, activeProducts, allocatePaymentAmount, cantinaSummary, findMembers, firstUnpaidPeriod, live, livePayments, liveSales,
-  memberFee, memberName, memberPeriodStatus, paidThroughPeriod, periodSummary, recentMovements, trend,
+  memberFee, memberName, memberPeriodStatus, paidThroughPeriod,
   validateMember, validatePayment, validateSale
 } from './model.js';
 import {
-  addMonths, clamp, currentPeriod, dateLabel, dateTimeLabel, escapeHTML, fuzzyMatch, money,
+  addMonths, currentPeriod, dateLabel, dateTimeLabel, escapeHTML, fuzzyMatch, money,
   normalizeText, nowISO, periodLabel, shortPeriodLabel, todayISO, uid
 } from './utils.js';
 
-const APP_VERSION = '6.6.1';
+const APP_VERSION = '6.6.2';
 const app = document.querySelector('#app');
 const AUTO_SYNC_MS = 30000;
 const DRIVE_LINK_PREFIX = 'northsouth:drive-linked:v1:';
@@ -30,7 +30,7 @@ const state = {
   data: savedSession ? loadData(savedSession.email) : null,
   authBusy: false,
   authError: '',
-  view: 'dashboard',
+  view: 'payments',
   memberQuery: '', memberFilter: 'active',
   paymentQuery: '', paymentMethod: 'all', paymentPeriod: 'all',
   feeQuery: '', feeWindowStart: addMonths(currentPeriod(), -1),
@@ -52,7 +52,6 @@ if (state.driveLinked && navigator.onLine && GOOGLE_WEB_CLIENT_ID) {
 }
 
 const viewMeta = {
-  dashboard: ['Panel', 'Lo importante de la academia, de un vistazo'],
   members: ['Socios', 'Fichas, cuotas y cobro rápido'],
   fees: ['Cuotas', 'Vista mensual de pagos y adelantos'],
   payments: ['Pagos', 'Historial de cuotas registradas'],
@@ -273,10 +272,10 @@ async function loginWithGoogle() {
     setDriveLinked(true);
     state.syncedOperationIds = new Set();
     state.sync = { kind:'local', text:'Guardado local · preparando Drive', lastAt:null };
-    state.view = 'dashboard';
+    state.view = 'payments';
     state.authBusy = false;
     startAutoSync();
-    render({ preserveScroll:false });
+    openPayment();
     await syncNow(false);
   } catch (e) {
     console.error(e);
@@ -444,11 +443,10 @@ function shell(content) {
   return `
     <div class="app-shell">
       <aside class="sidebar">
-        <button class="brand brand-button" data-view="dashboard" aria-label="Ir al panel">
+        <button class="brand brand-button" data-action="new-payment" aria-label="Registrar pago">
           <img src="./assets/north-south-logo.jpg" alt="North South"><div><div class="brand-title">NORTH SOUTH</div><div class="brand-sub">Academy · Maldonado</div></div>
         </button>
         <nav class="nav-list">
-          ${navButton('dashboard','◫','Panel')}
           ${navButton('members','♟','Socios')}
           ${navButton('fees','▦','Cuotas')}
           ${navButton('payments','$','Pagos')}
@@ -458,7 +456,7 @@ function shell(content) {
         <div class="sidebar-account"><span>Cuenta</span><strong>${escapeHTML(state.account?.name || state.account?.email || '')}</strong><small>${escapeHTML(state.account?.email || '')}</small></div>
       </aside>
       <main class="main">
-        <button class="mobile-brand brand-button" data-view="dashboard"><img src="./assets/north-south-logo.jpg" alt=""><strong>NORTH SOUTH ACADEMY</strong></button>
+        <button class="mobile-brand brand-button" data-action="new-payment"><img src="./assets/north-south-logo.jpg" alt=""><strong>NORTH SOUTH ACADEMY</strong></button>
         <header class="topbar">
           <div class="topbar-left"><h1>${title}</h1><p>${subtitle}</p></div>
           <div class="top-actions">
@@ -471,7 +469,6 @@ function shell(content) {
         ${content}
       </main>
       <nav class="mobile-nav">
-        <button data-view="dashboard" class="${state.view === 'dashboard' ? 'active' : ''}"><b>◫</b>Panel</button>
         <button data-view="members" class="${state.view === 'members' ? 'active' : ''}"><b>♟</b>Socios</button>
         <button data-view="payments" class="${state.view === 'payments' ? 'active' : ''}"><b>$</b>Pagos</button>
         <button data-view="cantina" class="${state.view === 'cantina' ? 'active' : ''}"><b>☕</b>Cantina</button>
@@ -481,77 +478,6 @@ function shell(content) {
     ${renderModal()}
     ${state.toast ? `<div class="toast ${state.toast.type === 'error' ? 'error' : ''}">${escapeHTML(state.toast.message)}</div>` : ''}
   `;
-}
-
-function renderDashboard() {
-  const period = currentPeriod();
-  const summary = periodSummary(state.data, period);
-  const cantina = cantinaSummary(state.data, period);
-  const movements = recentMovements(state.data, 10);
-  const futurePeriods = [1,2,3].map(i => addMonths(period, i));
-  const futurePaid = futurePeriods.map(p => ({ period:p, count:activeMembers(state.data).filter(m => memberPeriodStatus(state.data,m,p).isPaid).length }));
-  const bars = trend(state.data, period, 6);
-  const maxBar = Math.max(...bars.map(x => x.total), 1);
-  const isEmptyAccount = !state.data.members.length && !state.data.payments.length && !state.data.products.length && !state.data.sales.length;
-
-  return `${isEmptyAccount ? `<section class="card empty-account-hint"><div><strong>Esta cuenta todavía no tiene datos</strong><span>Para cargar la planilla inicial: Ajustes → Importar respaldo → IMPORTAR-DATOS-ACTUALES.json</span></div><button class="btn" data-view="settings">Ir a Ajustes</button></section>` : ''}` + `
-    <section class="dashboard-hero card">
-      <div class="hero-main">
-        <div class="eyebrow">${periodLabel(period)}</div>
-        <div class="hero-title">${money(summary.collected)} <span>cobrados</span></div>
-        <div class="hero-sub">Faltan ${money(summary.pendingAmount)} para completar las cuotas del mes</div>
-        <div class="progress-track big"><div class="progress-fill" style="width:${clamp(summary.rate*100,0,100)}%"></div></div>
-      </div>
-      <div class="hero-rate"><strong>${Math.round(summary.rate*100)}%</strong><span>cobrado</span></div>
-    </section>
-
-    <div class="simple-kpis">
-      <button class="card simple-kpi" data-view="members"><span class="kpi-icon">🥋</span><span><small>Socios activos</small><strong>${summary.activeCount}</strong></span></button>
-      <button class="card simple-kpi" data-view="fees"><span class="kpi-icon">✓</span><span><small>Al día este mes</small><strong>${summary.paidCount}</strong></span></button>
-      <button class="card simple-kpi" data-view="fees"><span class="kpi-icon">⏩</span><span><small>Pagaron mes siguiente</small><strong>${futurePaid[0].count}</strong></span></button>
-      <button class="card simple-kpi" data-view="cantina"><span class="kpi-icon">☕</span><span><small>Cantina este mes</small><strong>${money(cantina.total)}</strong></span></button>
-    </div>
-
-    <div class="dashboard-grid dashboard-clean">
-      <section class="card panel">
-        <div class="panel-head"><div><div class="panel-title">Últimos movimientos</div><div class="panel-subtitle">Ordenados por cuándo los agregaste</div></div></div>
-        <div class="movement-list">
-          ${movements.map(renderMovement).join('') || '<div class="empty">Todavía no hay movimientos.</div>'}
-        </div>
-      </section>
-
-      <div class="dashboard-side">
-        <section class="card panel">
-          <div class="panel-head"><div><div class="panel-title">Próximos meses</div><div class="panel-subtitle">Socios que ya dejaron la cuota paga</div></div><button class="btn small ghost" data-view="fees">Ver cuotas</button></div>
-          <div class="future-months">
-            ${futurePaid.map(x => `<div><span>${shortPeriodLabel(x.period)}</span><strong>${x.count}</strong><small>socios pagos</small></div>`).join('')}
-          </div>
-        </section>
-        <section class="card panel">
-          <div class="panel-head"><div><div class="panel-title">Cobros de los últimos meses</div></div></div>
-          <div class="chart-bars compact">
-            ${bars.map(x => `<div class="bar-wrap"><div class="bar-value">${x.total ? Math.round(x.total/1000)+'k' : '0'}</div><div class="bar" style="height:${Math.max(5,x.total/maxBar*105)}px"></div><div class="bar-label">${shortPeriodLabel(x.period).split(' ')[0]}</div></div>`).join('')}
-          </div>
-        </section>
-      </div>
-    </div>`;
-}
-
-function renderMovement(movement) {
-  const member = getMember(movement.memberId);
-  if (movement.movementType === 'sale') {
-    const product = getProduct(movement.productId);
-    return `<div class="movement-row">
-      <div class="movement-icon sale">${escapeHTML(product?.emoji || movement.productEmoji || '☕')}</div>
-      <div class="row-main"><div class="row-title">${escapeHTML(member ? memberName(member) : movement.memberId ? 'Socio no disponible' : 'Venta sin socio')} · ${escapeHTML(product?.name || movement.productName || 'Cantina')}</div><div class="row-sub">Venta del ${dateLabel(movement.soldAt)} · agregada ${dateTimeLabel(movement.createdAt)}</div></div>
-      <div class="amount">${money(movement.amount)}</div>
-    </div>`;
-  }
-  return `<div class="movement-row">
-    <div class="movement-icon payment">$</div>
-    <div class="row-main"><div class="row-title">${escapeHTML(member ? memberName(member) : 'Socio no disponible')}</div><div class="row-sub">Cuota ${shortPeriodLabel(movement.period)} · cobro ${dateLabel(movement.paidAt)} · agregado ${dateTimeLabel(movement.createdAt)}</div></div>
-    <div class="amount">${money(movement.amount)}</div>
-  </div>`;
 }
 
 function memberStatusLabel(member) {
@@ -868,7 +794,7 @@ function render({ preserveScroll = true } = {}) {
   const scrollState = preserveScroll ? captureScrollState() : { windowY:0, containers:{} };
   if (!state.account || !state.data) { app.innerHTML = renderLogin(); return; }
   if (state.view === 'fees' && compactViewport()) state.view = 'payments';
-  const content = state.view==='dashboard'?renderDashboard():state.view==='members'?renderMembers():state.view==='fees'?renderFees():state.view==='payments'?renderPayments():state.view==='cantina'?renderCantina():renderSettings();
+  const content = state.view==='members'?renderMembers():state.view==='fees'?renderFees():state.view==='payments'?renderPayments():state.view==='cantina'?renderCantina():renderSettings();
   app.innerHTML=shell(content);
   requestAnimationFrame(() => restoreScrollState(scrollState));
 }
@@ -987,7 +913,7 @@ app.addEventListener('click', async event => {
       reset.operations=[createResetOperation(reset,{createdAt:timestamp,deviceId:getDeviceId()})];
       state.data=overwriteData(state.account.email,reset,{markDirty:true});
       state.syncedOperationIds=new Set();
-      state.modal=null;state.view='dashboard';
+      state.modal=null;state.view='payments';
       state.sync=!navigator.onLine
         ? {kind:'offline',text:'Datos borrados · Drive pendiente',lastAt:state.sync.lastAt}
         : state.token
@@ -1143,7 +1069,8 @@ if(import.meta.env?.DEV && 'serviceWorker' in navigator){
   if('caches' in window) caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('north-south-')).map(k=>caches.delete(k)))).catch(()=>{});
 }
 if(import.meta.env?.PROD&&'serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(console.warn);
-render();
+if (state.account && state.data) openPayment();
+else render();
 
 window.addEventListener('storage', event => {
   if (!state.account?.email || event.key !== dataKeyFor(state.account.email) || !event.newValue || state.modal) return;
