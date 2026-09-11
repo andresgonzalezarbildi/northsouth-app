@@ -11,7 +11,7 @@ import { GOOGLE_WEB_CLIENT_ID } from './app-config.js';
 import { loadAuthSession, saveAuthSession, clearAuthSession, normalizeEmail } from './session.js';
 import {
   activeMembers, activeProducts, allocatePaymentAmount, cantinaSummary, findMembers, firstUnpaidPeriod, live, livePayments, liveSales,
-  memberFee, memberName, memberPeriodStatus, paidThroughPeriod,
+  memberFee, memberName, memberPeriodStatus, paidThroughPeriod, pendingMembers, periodSummary, recentMovements, recentPayments, trend,
   validateMember, validatePayment, validateSale
 } from './model.js';
 import {
@@ -19,7 +19,7 @@ import {
   normalizeText, nowISO, periodLabel, shortPeriodLabel, todayISO, uid
 } from './utils.js';
 
-const APP_VERSION = '6.6.2';
+const APP_VERSION = '6.6.3';
 const app = document.querySelector('#app');
 const AUTO_SYNC_MS = 30000;
 const DRIVE_LINK_PREFIX = 'northsouth:drive-linked:v1:';
@@ -30,7 +30,7 @@ const state = {
   data: savedSession ? loadData(savedSession.email) : null,
   authBusy: false,
   authError: '',
-  view: 'payments',
+  view: 'dashboard',
   memberQuery: '', memberFilter: 'active',
   paymentQuery: '', paymentMethod: 'all', paymentPeriod: 'all',
   feeQuery: '', feeWindowStart: addMonths(currentPeriod(), -1),
@@ -52,6 +52,7 @@ if (state.driveLinked && navigator.onLine && GOOGLE_WEB_CLIENT_ID) {
 }
 
 const viewMeta = {
+  dashboard: ['Resumen', 'Estado general de socios y cuotas'],
   members: ['Socios', 'Fichas, cuotas y cobro rápido'],
   fees: ['Cuotas', 'Vista mensual de pagos y adelantos'],
   payments: ['Pagos', 'Historial de cuotas registradas'],
@@ -272,10 +273,10 @@ async function loginWithGoogle() {
     setDriveLinked(true);
     state.syncedOperationIds = new Set();
     state.sync = { kind:'local', text:'Guardado local · preparando Drive', lastAt:null };
-    state.view = 'payments';
+    state.view = 'dashboard';
     state.authBusy = false;
     startAutoSync();
-    openPayment();
+    render({ preserveScroll:false });
     await syncNow(false);
   } catch (e) {
     console.error(e);
@@ -443,10 +444,11 @@ function shell(content) {
   return `
     <div class="app-shell">
       <aside class="sidebar">
-        <button class="brand brand-button" data-action="new-payment" aria-label="Registrar pago">
+        <button class="brand brand-button" data-view="dashboard" aria-label="Ir al resumen">
           <img src="./assets/north-south-logo.jpg" alt="North South"><div><div class="brand-title">NORTH SOUTH</div><div class="brand-sub">Academy · Maldonado</div></div>
         </button>
         <nav class="nav-list">
+          ${navButton('dashboard','⌂','Resumen')}
           ${navButton('members','♟','Socios')}
           ${navButton('fees','▦','Cuotas')}
           ${navButton('payments','$','Pagos')}
@@ -456,7 +458,7 @@ function shell(content) {
         <div class="sidebar-account"><span>Cuenta</span><strong>${escapeHTML(state.account?.name || state.account?.email || '')}</strong><small>${escapeHTML(state.account?.email || '')}</small></div>
       </aside>
       <main class="main">
-        <button class="mobile-brand brand-button" data-action="new-payment"><img src="./assets/north-south-logo.jpg" alt=""><strong>NORTH SOUTH ACADEMY</strong></button>
+        <button class="mobile-brand brand-button" data-view="dashboard"><img src="./assets/north-south-logo.jpg" alt=""><strong>NORTH SOUTH ACADEMY</strong></button>
         <header class="topbar">
           <div class="topbar-left"><h1>${title}</h1><p>${subtitle}</p></div>
           <div class="top-actions">
@@ -469,6 +471,7 @@ function shell(content) {
         ${content}
       </main>
       <nav class="mobile-nav">
+        <button data-view="dashboard" class="${state.view === 'dashboard' ? 'active' : ''}"><b>⌂</b>Resumen</button>
         <button data-view="members" class="${state.view === 'members' ? 'active' : ''}"><b>♟</b>Socios</button>
         <button data-view="payments" class="${state.view === 'payments' ? 'active' : ''}"><b>$</b>Pagos</button>
         <button data-view="cantina" class="${state.view === 'cantina' ? 'active' : ''}"><b>☕</b>Cantina</button>
@@ -478,6 +481,117 @@ function shell(content) {
     ${renderModal()}
     ${state.toast ? `<div class="toast ${state.toast.type === 'error' ? 'error' : ''}">${escapeHTML(state.toast.message)}</div>` : ''}
   `;
+}
+
+function renderDashboard() {
+  const period = currentPeriod();
+  const summary = periodSummary(state.data, period);
+  const pending = pendingMembers(state.data, period);
+  const recent = recentMovements(state.data, 8);
+  const payments = recentPayments(state.data, 8).filter(p => p.period === period);
+  const history = trend(state.data, period, 6);
+  const rate = Math.round(summary.rate * 100);
+  const maxTrend = Math.max(1, ...history.map(x => Number(x.total || 0)));
+  const methodTotal = Object.values(summary.methods).reduce((sum, value) => sum + Number(value || 0), 0);
+  const cashPct = methodTotal ? (summary.methods.cash / methodTotal) * 100 : 0;
+  const transferPct = methodTotal ? (summary.methods.transfer / methodTotal) * 100 : 0;
+  const otherPct = methodTotal ? ((summary.methods.other + summary.methods.unknown) / methodTotal) * 100 : 0;
+  const cashEnd = cashPct;
+  const transferEnd = cashPct + transferPct;
+
+  const pendingRows = pending.slice(0, 8).map(item => `<div class="row-card dashboard-pending-row">
+    <button class="avatar avatar-button pending" data-action="member-detail" data-id="${item.member.id}">${initials(memberName(item.member))}</button>
+    <button class="row-main text-button" data-action="member-detail" data-id="${item.member.id}"><div class="row-title">${escapeHTML(memberName(item.member))}</div><div class="row-sub">Cuota de ${shortPeriodLabel(period)} pendiente</div></button>
+    <button class="btn primary small" data-action="pay-member-period" data-id="${item.member.id}" data-period="${period}">Cobrar</button>
+  </div>`).join('') || '<div class="empty">No hay cuotas pendientes este mes.</div>';
+
+  const movementRows = recent.map(row => {
+    if (row.movementType === 'payment') {
+      const member = getMember(row.memberId);
+      return `<div class="movement-row"><div class="movement-icon payment">$</div><div class="row-main"><div class="row-title">${escapeHTML(member ? memberName(member) : (row.memberNameSnapshot || 'Socio no disponible'))}</div><div class="row-sub">Pago · ${shortPeriodLabel(row.period)} · ${dateTimeLabel(row.createdAt || row.updatedAt)}</div></div></div>`;
+    }
+    const member = getMember(row.memberId);
+    const product = getProduct(row.productId);
+    return `<div class="movement-row"><div class="movement-icon sale">${escapeHTML(product?.emoji || row.productEmoji || '☕')}</div><div class="row-main"><div class="row-title">${escapeHTML(product?.name || row.productName || 'Venta cantina')}</div><div class="row-sub">${member ? escapeHTML(memberName(member)) + ' · ' : ''}${dateTimeLabel(row.createdAt || row.updatedAt)}</div></div></div>`;
+  }).join('') || '<div class="empty">Todavía no hay movimientos.</div>';
+
+  const collectionRows = payments.map(p => {
+    const member = getMember(p.memberId);
+    return `<div class="row-card"><div class="avatar">${initials(member ? memberName(member) : '?')}</div><div class="row-main"><div class="row-title">${escapeHTML(member ? memberName(member) : (p.memberNameSnapshot || 'Socio no disponible'))}</div><div class="row-sub">${dateLabel(p.paidAt)} · ${methodLabel(p.method)}</div></div><div class="amount">${money(p.amount)}</div></div>`;
+  }).join('') || '<div class="empty">No hay cobros registrados para este mes.</div>';
+
+  const trendBars = history.map(item => {
+    const height = Math.max(4, Math.round((Number(item.total || 0) / maxTrend) * 100));
+    return `<div class="bar-wrap"><div class="bar-value">${money(item.total)}</div><div class="bar" style="height:${height}%"></div><div class="bar-label">${shortPeriodLabel(item.period).split(' ')[0]}</div></div>`;
+  }).join('');
+
+  return `
+    <section class="card dashboard-hero">
+      <div class="hero-main">
+        <div class="eyebrow">${periodLabel(period)}</div>
+        <div class="hero-title">${summary.paidCount} al día <span>de ${summary.activeCount} socios activos</span></div>
+        <div class="hero-sub">El resumen muestra el estado general sin exponer importes de cobros de entrada.</div>
+        <div class="progress-track big"><div class="progress-fill" style="width:${Math.max(0, Math.min(100, rate))}%"></div></div>
+        <div class="progress-row"><span>${rate}% de cobranza del mes</span><span>${summary.pendingCount} pendiente${summary.pendingCount===1?'':'s'}</span></div>
+      </div>
+      <div class="hero-rate"><strong>${rate}%</strong><span>cobranza</span></div>
+    </section>
+
+    <div class="simple-kpis">
+      <button class="card simple-kpi" data-view="members"><span class="kpi-icon">♟</span><span><small>Socios activos</small><strong>${summary.activeCount}</strong></span></button>
+      <button class="card simple-kpi" data-view="members"><span class="kpi-icon">✓</span><span><small>Cuotas al día</small><strong>${summary.paidCount}</strong></span></button>
+      <button class="card simple-kpi" data-view="members"><span class="kpi-icon">!</span><span><small>Pendientes</small><strong>${summary.pendingCount}</strong></span></button>
+      <button class="card simple-kpi" data-action="new-payment"><span class="kpi-icon">＋</span><span><small>Acción rápida</small><strong>Registrar pago</strong></span></button>
+    </div>
+
+    <div class="dashboard-grid dashboard-clean">
+      <section class="card panel">
+        <div class="panel-head"><div><div class="panel-title">Cuotas pendientes</div><div class="panel-subtitle">Socios que todavía no completaron ${periodLabel(period).toLowerCase()}</div></div><span class="badge warn">${summary.pendingCount}</span></div>
+        <div class="list">${pendingRows}</div>
+      </section>
+      <section class="card panel dashboard-side-panel">
+        <div class="panel-head"><div><div class="panel-title">Últimos movimientos</div><div class="panel-subtitle">Sin mostrar importes en el resumen</div></div></div>
+        <div class="movement-list">${movementRows}</div>
+      </section>
+    </div>
+
+    <details class="card collections-details">
+      <summary>
+        <span><strong>Cobros del mes</strong><small>Importes, medios de pago y evolución</small></span>
+        <span class="details-chevron">⌄</span>
+      </summary>
+      <div class="collections-body">
+        <div class="kpi-grid collections-kpis">
+          <div class="card kpi green"><div class="kpi-label">Cobrado</div><div class="kpi-value">${money(summary.collected)}</div><div class="kpi-sub">Registrado en ${periodLabel(period).toLowerCase()}</div></div>
+          <div class="card kpi"><div class="kpi-label">Esperado</div><div class="kpi-value">${money(summary.expected)}</div><div class="kpi-sub">Según cuotas vigentes</div></div>
+          <div class="card kpi red"><div class="kpi-label">Pendiente</div><div class="kpi-value">${money(summary.pendingAmount)}</div><div class="kpi-sub">${summary.pendingCount} socio${summary.pendingCount===1?'':'s'}</div></div>
+          <div class="card kpi"><div class="kpi-label">Cobranza</div><div class="kpi-value">${rate}%</div><div class="kpi-sub">Del total esperado</div></div>
+        </div>
+        <div class="dashboard-grid collections-grid">
+          <section class="card panel">
+            <div class="panel-head"><div><div class="panel-title">Últimos cobros</div><div class="panel-subtitle">Solo del mes actual</div></div><button class="btn small ghost" data-view="payments">Ver pagos</button></div>
+            <div class="list">${collectionRows}</div>
+          </section>
+          <div class="dashboard-side">
+            <section class="card panel">
+              <div class="panel-head"><div><div class="panel-title">Medios de pago</div><div class="panel-subtitle">Distribución de ${periodLabel(period).toLowerCase()}</div></div></div>
+              <div class="donut-row">
+                <div class="donut" style="background:conic-gradient(#df2935 0 ${cashEnd}%, #e1c466 ${cashEnd}% ${transferEnd}%, #747474 ${transferEnd}% 100%)"></div>
+                <div class="legend">
+                  <div class="legend-item"><span class="legend-label"><i class="legend-dot cash"></i>Efectivo</span><strong>${money(summary.methods.cash)}</strong></div>
+                  <div class="legend-item"><span class="legend-label"><i class="legend-dot transfer"></i>Transferencia</span><strong>${money(summary.methods.transfer)}</strong></div>
+                  <div class="legend-item"><span class="legend-label"><i class="legend-dot unknown"></i>Otros / sin especificar</span><strong>${money(summary.methods.other + summary.methods.unknown)}</strong></div>
+                </div>
+              </div>
+            </section>
+            <section class="card panel">
+              <div class="panel-head"><div><div class="panel-title">Últimos 6 meses</div><div class="panel-subtitle">Cobros registrados por período</div></div></div>
+              <div class="chart-bars compact">${trendBars}</div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </details>`;
 }
 
 function memberStatusLabel(member) {
@@ -794,7 +908,7 @@ function render({ preserveScroll = true } = {}) {
   const scrollState = preserveScroll ? captureScrollState() : { windowY:0, containers:{} };
   if (!state.account || !state.data) { app.innerHTML = renderLogin(); return; }
   if (state.view === 'fees' && compactViewport()) state.view = 'payments';
-  const content = state.view==='members'?renderMembers():state.view==='fees'?renderFees():state.view==='payments'?renderPayments():state.view==='cantina'?renderCantina():renderSettings();
+  const content = state.view==='dashboard'?renderDashboard():state.view==='members'?renderMembers():state.view==='fees'?renderFees():state.view==='payments'?renderPayments():state.view==='cantina'?renderCantina():renderSettings();
   app.innerHTML=shell(content);
   requestAnimationFrame(() => restoreScrollState(scrollState));
 }
@@ -913,7 +1027,7 @@ app.addEventListener('click', async event => {
       reset.operations=[createResetOperation(reset,{createdAt:timestamp,deviceId:getDeviceId()})];
       state.data=overwriteData(state.account.email,reset,{markDirty:true});
       state.syncedOperationIds=new Set();
-      state.modal=null;state.view='payments';
+      state.modal=null;state.view='dashboard';
       state.sync=!navigator.onLine
         ? {kind:'offline',text:'Datos borrados · Drive pendiente',lastAt:state.sync.lastAt}
         : state.token
